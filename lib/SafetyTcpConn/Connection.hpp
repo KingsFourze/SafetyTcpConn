@@ -15,6 +15,8 @@
 
 namespace SafetyTcpConn {
 
+class Endpoint;
+
 class Connection {
 private:
     static constexpr size_t kDefaultSize = 65536;
@@ -160,20 +162,26 @@ public:
         m_send_buff_size_ = total_data_len;
     }
 
+private:
+    friend class Endpoint;
+
     /// @brief
-    /// This method is only for `Endpoint`. Don't call it yourself.
+    /// Check If this connection need to send message. This method is only for `Endpoint`.
     /// @return  `true`: there are some data need to send  `false`: no data need to send
     bool NeedSend() {
         return IsConn() && m_send_buff_size_ > 0;
     }
 
     /// @brief 
-    /// This method is only for `Endpoint`. Don't call it yourself.
-    void TrySend() {
-        if (!IsConn()) return;
+    /// Send message in send buffer with non-blocking mode. This method is only for `Endpoint`.
+    /// @return `>0`: sent byte count `=0`: connection closed `<0`: can't send currently
+    int TrySend() {
+        if (!IsConn())
+            return 0;
 
         std::unique_lock<std::mutex> lck(m_send_buff_mtx_);
-        if (m_send_buff_size_ == 0) return;
+        if (m_send_buff_size_ == 0)
+            return -1;
 
         // get the len need to send and copy msg to tmp_buff
         size_t len = m_send_buff_size_ > 1500 ? 1500 : m_send_buff_size_;
@@ -203,6 +211,8 @@ public:
                 break;
             }
         };
+
+        return sent;
     }
 };
 

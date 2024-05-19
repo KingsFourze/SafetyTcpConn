@@ -19,9 +19,9 @@ typedef std::shared_ptr<Connection> ConnectionPtr;
 
 class Endpoint {
 private:
-    int m_sock_fd_;
-    int m_epoll_fd_;
-    const int m_port_;
+    const int                               m_port_;
+    int                                     m_sock_fd_;
+    int                                     m_epoll_fd_;
 
     sockaddr_in                             m_sockaddr_;
 
@@ -31,11 +31,8 @@ private:
     const std::function<void(Endpoint*, ConnectionPtr)>  m_cleanup_func_;
 
     std::mutex                              m_mtx_connptrs_;
+    std::condition_variable                 m_cond_connptrs_;
     std::unordered_map<int, ConnectionPtr>  m_fd_2_connptrs_;
-
-    std::mutex                              m_mtx_trysend_connptrs_;
-    std::condition_variable                 m_cond_trysend_connptrs_;
-    std::unordered_set<ConnectionPtr>       m_trysend_connptrs_;
 public:
     Endpoint(int port, std::function<void(Endpoint*, ConnectionPtr)> process_func, std::function<void(Endpoint*, ConnectionPtr)> cleanup_func)
         : m_port_(port), m_process_func_(process_func), m_cleanup_func_(cleanup_func)
@@ -51,6 +48,15 @@ public:
 
         // create socket
         m_sock_fd_ = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+
+        // set address reuse
+        const int reuse_addr = 1;
+        if (setsockopt(m_sock_fd_, SOL_SOCKET, SO_REUSEADDR, &reuse_addr, sizeof(int)) < 0) {
+            std::cerr << "SafetyTcpConn >> Endpoint >> Error >> Socket Set SO_REUSEADDR Failure." << std::endl;
+            exit(EXIT_FAILURE);
+        }
+
+        // bind socket
         if (bind(m_sock_fd_, (sockaddr *)&m_sockaddr_, sizeof(m_sockaddr_)) < 0) {
             std::cerr << "SafetyTcpConn >> Endpoint >> Error >> Socket Bind Failure." << std::endl;
             exit(EXIT_FAILURE);
@@ -77,14 +83,9 @@ public:
         m_send_thread_.join();
     }
 
-    void StartTrySend(ConnectionPtr& conn) {
-        std::unique_lock<std::mutex> lck(m_mtx_trysend_connptrs_);
-
-        // add connection ptr into try-send set
-        m_trysend_connptrs_.emplace(conn);
-
-        // notify the send thread to try send
-        m_cond_trysend_connptrs_.notify_one();
+    void StartTrySend() {
+        std::unique_lock<std::mutex> lck(m_mtx_connptrs_);
+        m_cond_connptrs_.notify_one();
     }
 
 private:
@@ -97,7 +98,10 @@ private:
 
         // add into connection ptr map
         ConnectionPtr conn = std::make_shared<Connection>(client_fd);
-        m_fd_2_connptrs_[conn->m_fd] = conn;
+        {
+            std::unique_lock<std::mutex> lck(m_mtx_connptrs_);
+            m_fd_2_connptrs_[conn->m_fd] = conn;
+        }
 
         // epoll subscribe to client
         epoll_event client_event{};
@@ -107,15 +111,21 @@ private:
     }
 
     inline void Remove(int fd) {
-        // try get connection ptr
-        auto it = m_fd_2_connptrs_.find(fd);
-        if (it == m_fd_2_connptrs_.end())
-            return;
-        ConnectionPtr& conn = it->second;
-        std::cout << "SafetyTcpConn >> Endpoint >> Client Disconnected | FD:" << conn->m_fd << std::endl;
+        ConnectionPtr conn;
 
-        // remove from connection ptr map
-        m_fd_2_connptrs_.erase(it);
+        {
+            std::unique_lock<std::mutex> lck(m_mtx_connptrs_);
+            // try get connection ptr
+            auto it = m_fd_2_connptrs_.find(fd);
+            if (it == m_fd_2_connptrs_.end())
+                return;
+            conn = it->second;
+
+            // remove from connection ptr map
+            m_fd_2_connptrs_.erase(it);
+        }
+
+        std::cout << "SafetyTcpConn >> Endpoint >> Client Disconnected | FD:" << conn->m_fd << std::endl;
         
         // close connection and run cleanup function
         conn->CloseConn();
@@ -123,11 +133,18 @@ private:
     }
 
     inline void Process(int fd) {
+        ConnectionPtr conn;
+
         // try get connection ptr
-        auto it = m_fd_2_connptrs_.find(fd);
-        if (it == m_fd_2_connptrs_.end())
-            return;
-        ConnectionPtr& conn = it->second;
+        {
+            std::unique_lock<std::mutex> lck(m_mtx_connptrs_);
+            
+            auto it = m_fd_2_connptrs_.find(fd);
+            if (it == m_fd_2_connptrs_.end())
+                return;
+            conn = it->second;
+        }
+
         std::cout << "SafetyTcpConn >> Endpoint >> Message Come | FD:" << conn->m_fd << std::endl;
 
         // run process function
@@ -136,7 +153,6 @@ private:
 
 private:
     static void RecvLoop(Endpoint* endpoint) {
-        std::cout << "Start Recv Loop" << std::endl;
         constexpr int kMaxEventSize = 32;
         epoll_event epoll_events[kMaxEventSize];
 
@@ -165,37 +181,58 @@ private:
                     endpoint->Process(epoll_events[i].data.fd);
             }
         }
-
-        std::cout << "End Recv Loop" << std::endl;
     }
 
     static void SendLoop(Endpoint* endpoint) {
-        std::cout << "Start Send Loop" << std::endl;
-        std::vector<ConnectionPtr> need_to_send;
+        std::unordered_set<ConnectionPtr> need_to_send;
 
         while (true) {
-            if (need_to_send.size() == 0 || need_to_send.size() != endpoint->m_trysend_connptrs_.size()) {
-                need_to_send.clear();
 
-                std::unique_lock<std::mutex> lck(endpoint->m_mtx_trysend_connptrs_);
-                while (endpoint->m_trysend_connptrs_.size() == 0)
-                    endpoint->m_cond_trysend_connptrs_.wait(lck);
+            // update need_to_send set
+            {
+                std::unique_lock<std::mutex> lck(endpoint->m_mtx_connptrs_);
 
-                for (auto it = endpoint->m_trysend_connptrs_.begin(); it != endpoint->m_trysend_connptrs_.end(); it++)
-                    need_to_send.push_back(*it);
+                start_update_set:
+                for (auto it = endpoint->m_fd_2_connptrs_.begin(); it != endpoint->m_fd_2_connptrs_.end(); it++) {
+                    const ConnectionPtr& conn = it->second;
+
+                    bool need_send = conn->NeedSend();
+                    auto it_need_send = need_to_send.find(conn);
+
+                    if (need_send && it_need_send == need_to_send.end())
+                        need_to_send.emplace(conn);
+                    else if (!need_send && it_need_send != need_to_send.end())
+                        need_to_send.erase(it_need_send);
+                }
+
+                // remove connection from `need_to_send` which is not in connection map
+                auto it_need_send = need_to_send.begin();
+                while (it_need_send != need_to_send.end()) {
+                    auto conn = *it_need_send;
+
+                    if (!conn->NeedSend()) {
+                        need_to_send.erase(it_need_send);
+
+                        it_need_send = need_to_send.begin();
+                        continue;
+                    }
+
+                    it_need_send++;
+                }
+
+                // nothing need to send, wait
+                if (need_to_send.size() == 0) {
+                    endpoint->m_cond_connptrs_.wait(lck);
+                    goto start_update_set; // this can save time on unlocking and relocking
+                }
             }
 
-            // call TrySend for connection in need_to_send vector
+            // call TrySend for connection in need_to_send set
             for (auto it = need_to_send.begin(); it != need_to_send.end(); it++) {
                 const ConnectionPtr& conn = *it;
                 
-                conn->TrySend();
-
-                if (!conn->NeedSend()) {
-                    // remove from the set if connection no need to send
-                    std::unique_lock<std::mutex> lck(endpoint->m_mtx_trysend_connptrs_);
-                    endpoint->m_trysend_connptrs_.erase(conn);
-                }
+                // sent messages until can't send
+                while (conn->TrySend() > 0);
             }
         }
     }
