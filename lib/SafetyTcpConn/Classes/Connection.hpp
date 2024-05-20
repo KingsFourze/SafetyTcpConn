@@ -10,6 +10,7 @@
 #include <fcntl.h>
 #include <sys/socket.h>
 #include <netinet/in.h>
+#include <netinet/tcp.h>
 #include <sys/epoll.h>
 #include <unistd.h>
 
@@ -32,12 +33,26 @@ private:
     size_t              m_send_buff_allcasize_;
 public:
     Endpoint*           m_endpoint_;
-    const int           m_fd;
+    const int           m_fd_;
 
     Connection(int fd, Endpoint* endpoint) :
-        m_fd(fd), m_endpoint_(endpoint), m_connected(true),
+        m_fd_(fd), m_endpoint_(endpoint), m_connected(true),
         m_send_buff_size_(0), m_send_buff_allcasize_(kDefaultSize), m_send_buff_(new char[kDefaultSize])
-    {}
+    {
+        int send_buff_size = 8192;
+        if (setsockopt(m_fd_, SOL_SOCKET, SO_SNDBUF, &send_buff_size, sizeof(send_buff_size)) < 0) {
+            std::cerr << "SafetyTcpConn >> Connection >> Error >> Set Socket Send Buffer Size Failure." << std::endl;
+            CloseConn();
+            return;
+        }
+
+        int cork = 1;
+        if (setsockopt(m_fd_, IPPROTO_TCP, TCP_CORK, &cork, sizeof(cork)) < 0) {
+            std::cerr << "SafetyTcpConn >> Connection >> Error >> Set Socket Send Buffer Size Failure." << std::endl;
+            CloseConn();
+            return;
+        }
+    }
 
     /// @brief 
     /// Get the alive status of the connection

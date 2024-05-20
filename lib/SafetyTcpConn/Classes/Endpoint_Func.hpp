@@ -23,20 +23,24 @@ inline void Endpoint::Accept() {
     sockaddr_in client_sockaddr{};
     socklen_t length = sizeof(client_sockaddr);
     int client_fd = accept(m_sock_fd_, (sockaddr *) &client_sockaddr, &length);
-    std::cout << "SafetyTcpConn >> Endpoint >> Client Connected | FD:" << client_fd << std::endl;
+
+    // create connection instance
+    ConnectionPtr conn = std::make_shared<Connection>(client_fd, this);
+    if (!conn->IsConn()) return;
 
     // add into connection ptr map
-    ConnectionPtr conn = std::make_shared<Connection>(client_fd, this);
     {
         std::unique_lock<std::mutex> lck(m_mtx_connptrs_);
-        m_fd_2_connptrs_[conn->m_fd] = conn;
+        m_fd_2_connptrs_[conn->m_fd_] = conn;
     }
+
+    std::cout << "SafetyTcpConn >> Endpoint >> Client Connected | FD:" << client_fd << std::endl;
 
     // epoll subscribe to client
     epoll_event client_event{};
     client_event.events = EPOLLIN | EPOLLERR | EPOLLHUP | EPOLLRDHUP | EPOLLET; // Add "| EPOLLET" to activate ET mode.
-    client_event.data.fd = conn->m_fd;
-    epoll_ctl(m_epoll_fd_, EPOLL_CTL_ADD, conn->m_fd, &client_event);
+    client_event.data.fd = conn->m_fd_;
+    epoll_ctl(m_epoll_fd_, EPOLL_CTL_ADD, conn->m_fd_, &client_event);
 }
 
 inline void Endpoint::Remove(int fd) {
@@ -54,7 +58,7 @@ inline void Endpoint::Remove(int fd) {
         m_fd_2_connptrs_.erase(it);
     }
 
-    std::cout << "SafetyTcpConn >> Endpoint >> Client Disconnected | FD:" << conn->m_fd << std::endl;
+    std::cout << "SafetyTcpConn >> Endpoint >> Client Disconnected | FD:" << conn->m_fd_ << std::endl;
     
     // close connection and run cleanup function
     conn->CloseConn();
@@ -74,7 +78,7 @@ inline void Endpoint::Process(int fd) {
         conn = it->second;
     }
 
-    std::cout << "SafetyTcpConn >> Endpoint >> Message Come | FD:" << conn->m_fd << std::endl;
+    std::cout << "SafetyTcpConn >> Endpoint >> Message Come | FD:" << conn->m_fd_ << std::endl;
 
     // run process function
     m_process_func_(this, conn);

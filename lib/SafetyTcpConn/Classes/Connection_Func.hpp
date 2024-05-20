@@ -27,7 +27,7 @@ inline void Connection::CloseConn() {
     }
 
     // close connection
-    close(m_fd);
+    close(m_fd_);
 }
 
 inline size_t Connection::ReadString(char* buff, size_t buff_len) {
@@ -37,7 +37,7 @@ inline size_t Connection::ReadString(char* buff, size_t buff_len) {
     memset(buff, '\0', buff_len);
 
     while (true) {
-        int r = recv(m_fd, buff, buff_len, MSG_DONTWAIT);
+        int r = recv(m_fd_, buff, buff_len, MSG_DONTWAIT);
 
         switch (r) {
             case 0:
@@ -61,7 +61,7 @@ inline char* Connection::ReadBytes(const size_t size) {
     size_t recved = 0;
 
     while (recved < size) {
-        int r = recv(m_fd, buff + recved, size - recved, MSG_DONTWAIT);
+        int r = recv(m_fd_, buff + recved, size - recved, MSG_DONTWAIT);
 
         switch (r) {
             case -1:
@@ -144,7 +144,7 @@ inline int Connection::TrySend() {
     size_t len = m_send_buff_size_ > 1500 ? 1500 : m_send_buff_size_;
 
     // send with non-blocking mode
-    int sent = send(m_fd, m_send_buff_, len, MSG_DONTWAIT);
+    int sent = send(m_fd_, m_send_buff_, len, MSG_DONTWAIT);
 
     // send done
     if (sent > 0) {

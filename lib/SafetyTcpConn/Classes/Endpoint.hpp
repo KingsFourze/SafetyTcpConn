@@ -78,6 +78,7 @@ public:
         m_recv_thread_ = std::thread(RecvLoop, this);
         m_send_thread_ = std::thread(SendLoop, this);
     }
+    
     ~Endpoint() {
         m_recv_thread_.join();
         m_send_thread_.join();
