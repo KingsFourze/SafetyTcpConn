@@ -5,7 +5,7 @@ include(CTest)
 enable_testing()
 
 
-include_directories(${PROJECT_SOURCE_DIR}/lib)
+include_directories(${PROJECT_SOURCE_DIR}/include)
 add_executable(SafetyTcpConnDemo demo/main.cpp)
 
 set(CPACK_PROJECT_NAME ${PROJECT_NAME})
