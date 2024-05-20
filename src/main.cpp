@@ -29,7 +29,6 @@ int main(int, char**) {
 
             std::cout << ss.str();
             conn->MsgEnqueue(ss.str().c_str(), ss.str().size());
-            endpoint->StartTrySend();
         },
         [](Endpoint* endpoint, ConnectionPtr conn) {
 
