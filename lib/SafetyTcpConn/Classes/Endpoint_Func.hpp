@@ -24,9 +24,10 @@ inline void Endpoint::Accept() {
     socklen_t length = sizeof(client_sockaddr);
     int client_fd = accept(m_sock_fd_, (sockaddr *) &client_sockaddr, &length);
 
+    std::cout << "SafetyTcpConn >> Endpoint >> Client Connected | FD:" << client_fd << std::endl;    
+
     // create connection instance
     ConnectionPtr conn = std::make_shared<Connection>(client_fd, this);
-    if (!conn->IsConn()) return;
 
     // add into connection ptr map
     {
@@ -34,16 +35,19 @@ inline void Endpoint::Accept() {
         m_fd_2_connptrs_[conn->m_fd_] = conn;
     }
 
-    std::cout << "SafetyTcpConn >> Endpoint >> Client Connected | FD:" << client_fd << std::endl;
-
     // epoll subscribe to client
     epoll_event client_event{};
-    client_event.events = EPOLLIN | EPOLLERR | EPOLLHUP | EPOLLRDHUP | EPOLLET; // Add "| EPOLLET" to activate ET mode.
+    client_event.events = EPOLLIN | EPOLLERR | EPOLLHUP | EPOLLRDHUP; // Add "| EPOLLET" to activate ET mode.
     client_event.data.fd = conn->m_fd_;
     epoll_ctl(m_epoll_fd_, EPOLL_CTL_ADD, conn->m_fd_, &client_event);
+
+    // run connection init function
+    m_coninit_func_(conn);
 }
 
 inline void Endpoint::Remove(int fd) {
+    std::cout << "SafetyTcpConn >> Endpoint >> Client Disconnected | FD:" << fd << std::endl;
+
     ConnectionPtr conn;
 
     {
@@ -58,11 +62,12 @@ inline void Endpoint::Remove(int fd) {
         m_fd_2_connptrs_.erase(it);
     }
 
-    std::cout << "SafetyTcpConn >> Endpoint >> Client Disconnected | FD:" << conn->m_fd_ << std::endl;
+    // unsubscribe from epoll
+    epoll_ctl(m_epoll_fd_, EPOLL_CTL_DEL, conn->m_fd_, nullptr);
     
     // close connection and run cleanup function
     conn->CloseConn();
-    m_cleanup_func_(this, conn);
+    m_cleanup_func_(conn);
 }
 
 inline void Endpoint::Process(int fd) {
@@ -81,7 +86,7 @@ inline void Endpoint::Process(int fd) {
     std::cout << "SafetyTcpConn >> Endpoint >> Message Come | FD:" << conn->m_fd_ << std::endl;
 
     // run process function
-    m_process_func_(this, conn);
+    m_process_func_(conn);
 }
 
 //==============================
@@ -168,7 +173,8 @@ inline void Endpoint::SendLoop(Endpoint* endpoint) {
             const ConnectionPtr& conn = *it;
             
             // sent messages until can't send
-            while (conn->TrySend() > 0);
+            int quota = 10; // fair usage policy
+            while (quota-- > 0 && conn->TrySend() > 0);
         }
     }
 }

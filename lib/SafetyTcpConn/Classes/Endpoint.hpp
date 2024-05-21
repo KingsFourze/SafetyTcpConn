@@ -27,15 +27,16 @@ private:
 
     std::thread                             m_recv_thread_;
     std::thread                             m_send_thread_;
-    const std::function<void(Endpoint*, ConnectionPtr)>  m_process_func_;
-    const std::function<void(Endpoint*, ConnectionPtr)>  m_cleanup_func_;
+    const std::function<void(ConnectionPtr)>    m_coninit_func_;
+    const std::function<void(ConnectionPtr)>    m_process_func_;
+    const std::function<void(ConnectionPtr)>    m_cleanup_func_;
 
     std::mutex                              m_mtx_connptrs_;
     std::condition_variable                 m_cond_connptrs_;
     std::unordered_map<int, ConnectionPtr>  m_fd_2_connptrs_;
 public:
-    Endpoint(int port, std::function<void(Endpoint*, ConnectionPtr)> process_func, std::function<void(Endpoint*, ConnectionPtr)> cleanup_func)
-        : m_port_(port), m_process_func_(process_func), m_cleanup_func_(cleanup_func)
+    Endpoint(int port, std::function<void(ConnectionPtr)> coninit_func, std::function<void(ConnectionPtr)> process_func, std::function<void(ConnectionPtr)> cleanup_func)
+        : m_port_(port), m_coninit_func_(coninit_func), m_process_func_(process_func), m_cleanup_func_(cleanup_func)
     {
         if (m_port_ < 1 || m_port_ > 65535){
             std::cerr << "SafetyTcpConn >> Endpoint >> Error >> Port: " << m_port_ << " is not Avaliable." << std::endl;
@@ -78,7 +79,7 @@ public:
         m_recv_thread_ = std::thread(RecvLoop, this);
         m_send_thread_ = std::thread(SendLoop, this);
     }
-    
+
     ~Endpoint() {
         m_recv_thread_.join();
         m_send_thread_.join();
