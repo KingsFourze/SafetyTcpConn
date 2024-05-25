@@ -24,8 +24,6 @@ inline void Endpoint::Accept() {
     socklen_t length = sizeof(client_sockaddr);
     int client_fd = accept(m_sock_fd_, (sockaddr *) &client_sockaddr, &length);
 
-    std::cout << "SafetyTcpConn >> Endpoint >> Client Connected | FD:" << client_fd << std::endl;    
-
     // create connection instance
     ConnectionPtr conn = std::make_shared<Connection>(client_fd, this);
 
@@ -46,8 +44,6 @@ inline void Endpoint::Accept() {
 }
 
 inline void Endpoint::Remove(int fd) {
-    std::cout << "SafetyTcpConn >> Endpoint >> Client Disconnected | FD:" << fd << std::endl;
-
     ConnectionPtr conn;
 
     {
@@ -83,8 +79,6 @@ inline void Endpoint::Process(int fd) {
         conn = it->second;
     }
 
-    std::cout << "SafetyTcpConn >> Endpoint >> Message Come | FD:" << conn->m_fd_ << std::endl;
-
     // run process function
     m_process_func_(conn);
 }
@@ -98,16 +92,11 @@ inline void Endpoint::RecvLoop(Endpoint* endpoint) {
     epoll_event epoll_events[kMaxEventSize];
 
     int event_count = 0;
-    while (true) {
-        event_count = epoll_wait(endpoint->m_epoll_fd_, epoll_events, kMaxEventSize, -1);
+    while (endpoint->m_running_.load()) {
+        event_count = epoll_wait(endpoint->m_epoll_fd_, epoll_events, kMaxEventSize, 1000);
         if (event_count == -1) {
             std::cerr << "SafetyTcpConn >> Endpoint >> Error >> Epoll Error!" << std::endl;
             exit(EXIT_FAILURE);
-        }
-
-        if (event_count == 0) {
-            usleep(100);
-            continue;
         }
 
         for (int i = 0; i < event_count; i++) {
@@ -134,6 +123,10 @@ inline void Endpoint::SendLoop(Endpoint* endpoint) {
             std::unique_lock<std::mutex> lck(endpoint->m_mtx_connptrs_);
 
             start_update_set:
+            // check running state before update need_to_send set
+            if (!endpoint->m_running_.load())
+                break;
+
             for (auto it = endpoint->m_fd_2_connptrs_.begin(); it != endpoint->m_fd_2_connptrs_.end(); it++) {
                 const ConnectionPtr& conn = it->second;
 

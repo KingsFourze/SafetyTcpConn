@@ -25,6 +25,7 @@ private:
 
     sockaddr_in                             m_sockaddr_;
 
+    std::atomic_bool                        m_running_;
     std::thread                             m_recv_thread_;
     std::thread                             m_send_thread_;
     const std::function<void(ConnectionPtr)>    m_coninit_func_;
@@ -36,7 +37,7 @@ private:
     std::unordered_map<int, ConnectionPtr>  m_fd_2_connptrs_;
 public:
     Endpoint(int port, std::function<void(ConnectionPtr)> coninit_func, std::function<void(ConnectionPtr)> process_func, std::function<void(ConnectionPtr)> cleanup_func)
-        : m_port_(port), m_coninit_func_(coninit_func), m_process_func_(process_func), m_cleanup_func_(cleanup_func)
+        : m_port_(port), m_running_(true), m_coninit_func_(coninit_func), m_process_func_(process_func), m_cleanup_func_(cleanup_func)
     {
         if (m_port_ < 1 || m_port_ > 65535){
             std::cerr << "SafetyTcpConn >> Endpoint >> Error >> Port: " << m_port_ << " is not Avaliable." << std::endl;
@@ -81,8 +82,26 @@ public:
     }
 
     ~Endpoint() {
+        // set running state to false
+        m_running_.store(false);
+
+        // close all connection
+        {
+            std::unique_lock<std::mutex> lck(m_mtx_connptrs_);
+            for (auto it = m_fd_2_connptrs_.begin(); it != m_fd_2_connptrs_.end(); it++)
+                it->second->CloseConn();
+        }
+
+        // wake send thread up
+        StartTrySend();
+
+        // wait all thread stop
         m_recv_thread_.join();
         m_send_thread_.join();
+
+        // close epoll and socket fd
+        close(m_sock_fd_);
+        close(m_epoll_fd_);
     }
 
 private:
