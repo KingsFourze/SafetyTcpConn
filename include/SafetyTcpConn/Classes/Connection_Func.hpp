@@ -147,14 +147,20 @@ inline int Connection::TrySend() {
     int sent = send(m_fd_, m_send_buff_, len, MSG_DONTWAIT);
 
     // send done
+    time_t current_time = time(nullptr);
     if (sent > 0) {
+        m_prev_sendtime_ = current_time;
+
         m_send_buff_size_ -= sent;
         memcpy(m_send_buff_, m_send_buff_ + sent, m_send_buff_size_);
         return sent;
     }
     // can't send currently
     else if (sent < 0 && (errno == EAGAIN || errno == EINTR)) {
-        return -1;
+        if (current_time - m_prev_sendtime_ < 5)
+            return -1;
+        CloseConn();
+        return 0;
     }
     // disconnected
     else {

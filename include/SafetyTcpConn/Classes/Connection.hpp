@@ -25,7 +25,8 @@ private:
     static constexpr size_t kMaxSize     = 65536 * 16;
 private:
     std::atomic_bool    m_connected;
-
+    time_t              m_prev_sendtime_;
+    
     // for sending
     std::mutex          m_send_buff_mtx_;
     char*               m_send_buff_;
@@ -52,6 +53,12 @@ public:
             CloseConn();
             return;
         }
+    }
+    ~Connection() {
+        // close connection if not close
+        CloseConn();
+        // release buffer
+        delete [] m_send_buff_;
     }
 
     /// @brief 
