@@ -162,13 +162,19 @@ inline void Endpoint::SendLoop(Endpoint* endpoint) {
         }
 
         // call TrySend for connection in need_to_send set
+        uint32_t send_success_count = 0;
         for (auto it = need_to_send.begin(); it != need_to_send.end(); it++) {
             const ConnectionPtr& conn = *it;
             
             // sent messages until can't send
             int quota = 10; // fair usage policy
-            while (quota-- > 0 && conn->TrySend() > 0);
+            while (quota-- > 0 && conn->TrySend() > 0)
+                send_success_count++;
         }
+
+        // prevent busy loop
+        if (send_success_count == 0)
+            usleep(500);
     }
 }
 
