@@ -36,21 +36,19 @@ inline size_t Connection::ReadString(char* buff, size_t buff_len) {
 
     memset(buff, '\0', buff_len);
 
-    while (true) {
-        int r = recv(m_fd_, buff, buff_len, MSG_DONTWAIT);
+    int r = recv(m_fd_, buff, buff_len, MSG_DONTWAIT);
 
-        switch (r) {
-            case 0:
+    switch (r) {
+        case 0:
+            CloseConn();
+            return 0;
+        case -1:
+            if (errno != EAGAIN && errno != EINTR)
                 CloseConn();
-                return 0;
-            case -1:
-                if (errno != EAGAIN && errno != EINTR)
-                    CloseConn();
-                return 0;
-            default:
-                return r;
-        };
-    }
+            return 0;
+        default:
+            return r;
+    };
 }
 
 inline char* Connection::ReadBytes(const size_t size) {
