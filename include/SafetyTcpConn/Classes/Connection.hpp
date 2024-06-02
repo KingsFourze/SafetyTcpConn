@@ -89,6 +89,11 @@ public:
 
 private:
     /// @brief
+    /// Check and extend buffer if needed. This method is only for `Connection`.
+    /// @return  `true`: buffer allocated / no need to extend  `false`: reach max buffer size
+    bool ExtendBuffer(char*& buff_ptr, size_t target_size, size_t& curr_size, size_t& allocsize);
+
+    /// @brief
     /// Check If this connection need to send message. This method is only for `Endpoint`.
     /// @return  `true`: there are some data need to send  `false`: no data need to send
     bool NeedSend();

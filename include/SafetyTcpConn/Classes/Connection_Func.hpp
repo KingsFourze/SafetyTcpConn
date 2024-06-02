@@ -93,27 +93,9 @@ inline void Connection::MsgEnqueue(const char* msg, const size_t len) {
         const size_t total_data_len = m_send_buff_size_ + len;
 
         // check if buff size is enough, if not then extend it
-        if (m_send_buff_allcasize_ < total_data_len) {
-            const size_t new_buff_allocsize = (total_data_len / kDefaultSize + (size_t)(total_data_len % kDefaultSize > 0)) * kDefaultSize;
-            if (new_buff_allocsize > kMaxSize) {
-                CloseConn();
-                return;
-            }
-
-            char* old_buff = m_send_buff_;
-            char* new_buff = new char[new_buff_allocsize];
-
-            // copy old buff's data to new buff
-            memcpy(new_buff, old_buff, m_send_buff_size_);
-
-            // clean old buff
-            delete [] old_buff;
-
-            // replace buff ptr and allocated size
-            m_send_buff_ = new_buff;
-            m_send_buff_allcasize_ = new_buff_allocsize;
-        }
-
+        if (!ExtendBuffer(m_send_buff_, total_data_len, m_send_buff_size_, m_send_buff_allcasize_))
+            return;
+            
         // copy msg's data into the end of buff
         memcpy(m_send_buff_ + m_send_buff_size_, msg, len);
         m_send_buff_size_ = total_data_len;
@@ -125,6 +107,31 @@ inline void Connection::MsgEnqueue(const char* msg, const size_t len) {
 //==============================
 // Endpoint Control Area
 //==============================
+
+inline bool Connection::ExtendBuffer(char*& buff_ptr, size_t future_size, size_t& curr_size, size_t& allocsize) {
+    const size_t target_buff_allocsize = (future_size / kDefaultSize + (size_t)(future_size % kDefaultSize > 0)) * kDefaultSize;
+    // no need to extend buff
+    if (target_buff_allocsize <= allocsize) return true;
+
+    // reach max allocation size
+    if (target_buff_allocsize > kMaxSize) {
+        CloseConn();
+        return false;
+    }
+
+    // allocate buff
+    char* old_buff = buff_ptr;
+    char* new_buff = new char[target_buff_allocsize];
+
+    // copy old buff's data to new buff
+    memcpy(new_buff, old_buff, curr_size);
+
+    // replace buff ptr and allocated size
+    buff_ptr = new_buff;
+    allocsize = target_buff_allocsize;
+
+    return true;
+}
 
 inline bool Connection::NeedSend() {
     return IsConn() && m_send_buff_size_ > 0;
