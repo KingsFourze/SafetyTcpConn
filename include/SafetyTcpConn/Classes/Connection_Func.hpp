@@ -158,7 +158,7 @@ inline int Connection::TrySend() {
         m_prev_sendtime_ = current_time;
 
         m_send_buff_size_ -= sent;
-        memcpy(m_send_buff_, m_send_buff_ + sent, m_send_buff_size_);
+        memmove(m_send_buff_, m_send_buff_ + sent, m_send_buff_size_);
         return sent;
     }
     // can't send currently
