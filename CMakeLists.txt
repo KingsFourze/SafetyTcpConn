@@ -1,9 +1,11 @@
 cmake_minimum_required(VERSION 3.0.0)
-project(SafetyTcpConnDemo VERSION 0.1.0 LANGUAGES C CXX)
+project(SafetyTcpConnDemo VERSION 0.2.0 LANGUAGES C CXX)
 
 include(CTest)
 enable_testing()
 
+set(CMAKE_CXX_STANDARD_REQUIRED true)
+set(CMAKE_CXX_STANDARD 11)
 
 include_directories(${PROJECT_SOURCE_DIR}/include)
 add_executable(SafetyTcpConnDemo demo/main.cpp)
