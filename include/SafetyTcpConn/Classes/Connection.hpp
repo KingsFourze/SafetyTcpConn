@@ -79,8 +79,9 @@ public:
 
     /// @brief Read a `std::string` message from connection's recv buff splited by `delimiter`
     /// @param delimiter the delimiter for msg string. example: \\r\\n
+    /// @param keep_read return the status of whether the program needs to continue reading
     /// @return `std::string`: a string message
-    std::string ReadString(const std::string delimiter);
+    std::string ReadString(const std::string delimiter, bool& keep_read);
 
     /// @brief Read byte(s) of message from connection's recv buff
     /// @param size the length of message you want

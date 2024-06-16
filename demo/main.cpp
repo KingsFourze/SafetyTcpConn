@@ -15,11 +15,13 @@ int main(int, char**) {
         [](ConnectionPtr conn) {
             std::cout << "SafetyTcpConn >> Endpoint >> Message Come | FD:" << conn->m_fd_ << std::endl;
 
-            while (true) {
+            bool keep_read = true;
+            while (keep_read) {
                 // recv full msg, msg is end with \r\n
-                std::string fullMsg = conn->ReadString("\r\n");
+                // the keep_read will set to false when no ended message found
+                std::string fullMsg = conn->ReadString("\r\n", keep_read);
                 if (fullMsg.size() == 0)
-                    break;
+                    continue;
 
                 std::cout << "recved msg: " << fullMsg << std::endl;
                 conn->MsgEnqueue(fullMsg.c_str(), fullMsg.size());

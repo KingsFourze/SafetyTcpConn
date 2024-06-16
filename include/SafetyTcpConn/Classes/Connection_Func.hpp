@@ -30,16 +30,18 @@ inline void Connection::CloseConn() {
     close(m_fd_);
 }
 
-inline std::string Connection::ReadString(const std::string delimiter) {
+inline std::string Connection::ReadString(const std::string delimiter, bool& keep_read) {
+    // set flag to false before a message readed
+    keep_read = false;
+
     if (!m_connected_.load())
         return "";
 
     const size_t delimiter_size = delimiter.size();
 
     std::unique_lock<std::mutex> lck(m_recv_buff_mtx_);
-    if (m_recv_buff_size_ < delimiter_size) {
+    if (m_recv_buff_size_ < delimiter_size)
         return "";
-    }
 
     std::string msg = std::string();
 
@@ -57,6 +59,8 @@ inline std::string Connection::ReadString(const std::string delimiter) {
         // reset buff size
         m_recv_buff_size_ -= end_index;
 
+        // set keep read if still have message not readed
+        keep_read = true;
         break;
     }
 
@@ -79,7 +83,7 @@ inline char* Connection::ReadBytes(const size_t size) {
 
     // move other data to the front
     std::memmove(m_recv_buff_, m_recv_buff_ + size, size_after_read);
-    
+
     // reset buff size
     m_recv_buff_size_ = size_after_read;
 
