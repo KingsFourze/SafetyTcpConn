@@ -35,7 +35,7 @@ inline void Endpoint::Accept() {
 
     // epoll subscribe to client
     epoll_event client_event{};
-    client_event.events = EPOLLIN | EPOLLERR | EPOLLHUP | EPOLLRDHUP; // Add "| EPOLLET" to activate ET mode.
+    client_event.events = EPOLLIN | EPOLLOUT | EPOLLERR | EPOLLHUP | EPOLLRDHUP | EPOLLET;
     client_event.data.fd = conn->m_fd_;
     epoll_ctl(m_epoll_fd_, EPOLL_CTL_ADD, conn->m_fd_, &client_event);
 
@@ -46,15 +46,15 @@ inline void Endpoint::Accept() {
 inline void Endpoint::Remove(int fd) {
     ConnectionPtr conn;
 
+    // try get connection ptr
+    auto it = m_fd_2_connptrs_.find(fd);
+    if (it == m_fd_2_connptrs_.end())
+        return;
+    conn = it->second;
+
+    // remove from connection ptr map
     {
         std::unique_lock<std::mutex> lck(m_mtx_connptrs_);
-        // try get connection ptr
-        auto it = m_fd_2_connptrs_.find(fd);
-        if (it == m_fd_2_connptrs_.end())
-            return;
-        conn = it->second;
-
-        // remove from connection ptr map
         m_fd_2_connptrs_.erase(it);
     }
 
@@ -70,24 +70,39 @@ inline void Endpoint::Process(int fd) {
     ConnectionPtr conn;
 
     // try get connection ptr
-    {
-        std::unique_lock<std::mutex> lck(m_mtx_connptrs_);
-        
-        auto it = m_fd_2_connptrs_.find(fd);
-        if (it == m_fd_2_connptrs_.end())
-            return;
-        conn = it->second;
-    }
+    auto it = m_fd_2_connptrs_.find(fd);
+    if (it == m_fd_2_connptrs_.end())
+        return;
+    conn = it->second;
 
-    // run process function
-    m_process_func_(conn);
+    // connection receive message
+    if (conn->TryRecv()) {
+        // run process function
+        m_process_func_(conn);
+    }
+}
+
+inline void Endpoint::SetSendFlag(int fd) {
+    ConnectionPtr conn;
+
+    // try get connection ptr
+    auto it = m_fd_2_connptrs_.find(fd);
+    if (it == m_fd_2_connptrs_.end())
+        return;
+    conn = it->second;
+
+    // set the send flag to true, make the connection can send
+    conn->SetSendFlag();
+
+    // call the send thread try to send
+    this->StartTrySend();
 }
 
 //==============================
 // Endpoint Main Process Area
 //==============================
 
-inline void Endpoint::RecvLoop(Endpoint* endpoint) {
+inline void Endpoint::EpollLoop(Endpoint* endpoint) {
     constexpr int kMaxEventSize = 32;
     epoll_event epoll_events[kMaxEventSize];
 
@@ -99,6 +114,24 @@ inline void Endpoint::RecvLoop(Endpoint* endpoint) {
             exit(EXIT_FAILURE);
         }
 
+        // scan and remove locally closed connection
+        {
+            // find all locally closed connection
+            std::vector<ConnectionPtr> locally_closed_connections;
+            for (auto it = endpoint->m_fd_2_connptrs_.begin(); it != endpoint->m_fd_2_connptrs_.end(); it++) {
+                const ConnectionPtr& conn = it->second;
+                if (conn->IsConn()) 
+                    continue;
+                locally_closed_connections.push_back(conn);
+            }
+
+            // run normal cleanup funtion
+            for (int i = 0; i < locally_closed_connections.size(); i++) {
+                const ConnectionPtr& conn = locally_closed_connections.at(i);
+                endpoint->Remove(conn->m_fd_);
+            }
+        }
+
         for (int i = 0; i < event_count; i++) {
             // Accept Client
             if (epoll_events[i].data.fd == endpoint->m_sock_fd_)
@@ -106,15 +139,19 @@ inline void Endpoint::RecvLoop(Endpoint* endpoint) {
             // Error or Disconnect
             else if (epoll_events[i].events & EPOLLERR || epoll_events[i].events & EPOLLHUP || epoll_events[i].events & EPOLLRDHUP)
                 endpoint->Remove(epoll_events[i].data.fd);
-            // Data coming
+            // Data Coming
             else if (epoll_events[i].events & EPOLLIN)
                 endpoint->Process(epoll_events[i].data.fd);
+            // Send Avaliable
+            else if (epoll_events[i].events & EPOLLOUT)
+                endpoint->SetSendFlag(epoll_events[i].data.fd);
         }
     }
 }
 
 inline void Endpoint::SendLoop(Endpoint* endpoint) {
     std::unordered_set<ConnectionPtr> need_to_send;
+    std::unordered_set<ConnectionPtr> no_need_to_send;
 
     while (true) {
 
@@ -130,33 +167,13 @@ inline void Endpoint::SendLoop(Endpoint* endpoint) {
             for (auto it = endpoint->m_fd_2_connptrs_.begin(); it != endpoint->m_fd_2_connptrs_.end(); it++) {
                 const ConnectionPtr& conn = it->second;
 
-                bool need_send = conn->NeedSend();
-                auto it_need_send = need_to_send.find(conn);
-
-                if (need_send && it_need_send == need_to_send.end())
+                if (conn->NeedSend() && need_to_send.find(conn) == need_to_send.end())
                     need_to_send.emplace(conn);
-                else if (!need_send && it_need_send != need_to_send.end())
-                    need_to_send.erase(it_need_send);
-            }
-
-            // remove connection from `need_to_send` which is not in connection map
-            auto it_need_send = need_to_send.begin();
-            while (it_need_send != need_to_send.end()) {
-                auto conn = *it_need_send;
-
-                if (!conn->NeedSend()) {
-                    need_to_send.erase(it_need_send);
-
-                    it_need_send = need_to_send.begin();
-                    continue;
-                }
-
-                it_need_send++;
             }
 
             // nothing need to send, wait
             if (need_to_send.size() == 0) {
-                endpoint->m_cond_connptrs_.wait(lck);
+                endpoint->m_cond_connptrs_.wait_for(lck, std::chrono::milliseconds(1));
                 goto start_update_set; // this can save time on unlocking and relocking
             }
         }
@@ -168,13 +185,19 @@ inline void Endpoint::SendLoop(Endpoint* endpoint) {
             
             // sent messages until can't send
             int quota = 10; // fair usage policy
-            while (quota-- > 0 && conn->TrySend() > 0)
+            while (quota-- > 0) {
+                if (conn->TrySend() <= 0) {
+                    no_need_to_send.emplace(conn);
+                    break;
+                }
                 send_success_count++;
+            }
         }
 
-        // prevent busy loop
-        if (send_success_count == 0)
-            usleep(500);
+        // remove no_need_to_send connection from need_to_send set
+        for (auto it = no_need_to_send.begin(); it != no_need_to_send.end(); it++)
+            need_to_send.erase(*it);
+        no_need_to_send.clear();
     }
 }
 

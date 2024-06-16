@@ -15,23 +15,15 @@ int main(int, char**) {
         [](ConnectionPtr conn) {
             std::cout << "SafetyTcpConn >> Endpoint >> Message Come | FD:" << conn->m_fd_ << std::endl;
 
-            // recv full msg, msg is end with \r\n
-            std::string fullMsg = "";
-            char buff[1024];
-            while (fullMsg.size() < 2 || fullMsg.substr(fullMsg.size() - 2, 2) != "\r\n") {
-                size_t readSize = conn->ReadString(buff, 1024);
-                if (readSize == 0) {
-                    if (conn->IsConn())
-                        continue;
-                    return;
-                }
+            while (true) {
+                // recv full msg, msg is end with \r\n
+                std::string fullMsg = conn->ReadString("\r\n");
+                if (fullMsg.size() == 0)
+                    break;
 
-                // concat readed data into fullMsg
-                fullMsg.append(buff, buff + readSize);
+                std::cout << "recved msg: " << fullMsg << std::endl;
+                conn->MsgEnqueue(fullMsg.c_str(), fullMsg.size());
             }
-
-            std::cout << fullMsg;
-            conn->MsgEnqueue(fullMsg.c_str(), fullMsg.size());
         },
         [](ConnectionPtr conn) {
             std::cout << "SafetyTcpConn >> Endpoint >> Client Disconnected | FD:" << conn->m_fd_ << std::endl;

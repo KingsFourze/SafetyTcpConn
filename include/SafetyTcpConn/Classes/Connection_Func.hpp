@@ -11,16 +11,16 @@ namespace SafetyTcpConn {
 // Public Area
 //==============================
 inline bool Connection::IsConn() {
-    return m_connected.load();
+    return m_connected_.load();
 }
 
 inline void Connection::CloseConn() {
-    bool conn_state = m_connected.load();
+    bool conn_state = m_connected_.load();
     // no need to close connection
     if (!conn_state) return;
 
     // atomic to set m_connected to false
-    while (!m_connected.compare_exchange_weak(conn_state, false)) {
+    while (!m_connected_.compare_exchange_weak(conn_state, false)) {
         // connection will be close by another thread
         if (conn_state == false)
             return;
@@ -30,56 +30,60 @@ inline void Connection::CloseConn() {
     close(m_fd_);
 }
 
-inline size_t Connection::ReadString(char* buff, size_t buff_len) {
-    if (!m_connected.load())
-        return 0;
+inline std::string Connection::ReadString(const std::string delimiter) {
+    if (!m_connected_.load())
+        return "";
 
-    memset(buff, '\0', buff_len);
+    const size_t delimiter_size = delimiter.size();
 
-    int r = recv(m_fd_, buff, buff_len, MSG_DONTWAIT);
+    std::unique_lock<std::mutex> lck(m_recv_buff_mtx_);
+    if (m_recv_buff_size_ < delimiter_size) {
+        return "";
+    }
 
-    switch (r) {
-        case 0:
-            CloseConn();
-            return 0;
-        case -1:
-            if (errno != EAGAIN && errno != EINTR)
-                CloseConn();
-            return 0;
-        default:
-            return r;
-    };
+    std::string msg = std::string();
+
+    for (int start_index = 0; start_index <= m_recv_buff_size_ - delimiter_size; start_index++) {
+        size_t end_index = start_index + delimiter_size;
+        
+        if (std::string(m_recv_buff_ + start_index, m_recv_buff_ + end_index) != delimiter)
+            continue;
+        
+        // copy msg data into string container
+        msg.append(m_recv_buff_, m_recv_buff_ + start_index);
+
+        // move other data to the front
+        std::memmove(m_recv_buff_, m_recv_buff_ + end_index, m_recv_buff_size_ - end_index);
+        // reset buff size
+        m_recv_buff_size_ -= end_index;
+
+        break;
+    }
+
+    return msg;
 }
 
 inline char* Connection::ReadBytes(const size_t size) {
-    if (!m_connected.load())
+    if (!m_connected_.load())
         return nullptr;
 
+    std::unique_lock<std::mutex> lck(m_recv_buff_mtx_);
+    if (m_recv_buff_size_ < size)
+        return nullptr;
+
+    const size_t size_after_read = m_recv_buff_size_ - size;
+
+    // copy message from recv buff to read buff
     char* buff = new char[size];
-    size_t recved = 0;
+    std::memcpy(buff, m_recv_buff_, size);
 
-    while (recved < size) {
-        int r = recv(m_fd_, buff + recved, size - recved, MSG_DONTWAIT);
+    // move other data to the front
+    std::memmove(m_recv_buff_, m_recv_buff_ + size, size_after_read);
+    
+    // reset buff size
+    m_recv_buff_size_ = size_after_read;
 
-        switch (r) {
-            case -1:
-            {
-                if (errno == EAGAIN || errno == EINTR)
-                    break;
-            }
-            case 0:
-            {
-                CloseConn();
-                delete [] buff;
-                return nullptr;
-            }
-            default:
-            {
-                recved += r;
-                break;
-            }
-        };
-    }
+    return buff;
 }
 
 inline void Connection::MsgEnqueue(const char* msg, const size_t len) {
@@ -134,39 +138,88 @@ inline bool Connection::ExtendBuffer(char*& buff_ptr, size_t future_size, size_t
     return true;
 }
 
+inline bool Connection::TryRecv() {
+    constexpr size_t recv_buff_size = 1500;
+    char buff[recv_buff_size];
+
+    int recved = 0;
+    {
+        std::unique_lock<std::mutex> lck(m_recv_buff_mtx_);
+        while (IsConn()) {
+            recved = recv(m_fd_, buff, recv_buff_size, MSG_DONTWAIT | MSG_NOSIGNAL);
+
+            // nothing need to recevie
+            if (recved <= 0) break;
+
+            // calculate the total size of data
+            const size_t total_data_len = m_recv_buff_size_ + recved;
+
+            // check if buff size is enough, if not then extend it
+            if (!ExtendBuffer(m_recv_buff_, total_data_len, m_recv_buff_size_, m_recv_buff_allcasize_))
+                break; 
+
+            // copy msg's data into the end of buff
+            memcpy(m_recv_buff_ + m_recv_buff_size_, buff, recved);
+            m_recv_buff_size_ = total_data_len;
+        }
+    }
+    
+    // connection closed / error
+    if (recved == 0 || (recved < 0 && errno != EAGAIN && errno != EINTR)) {
+        CloseConn();
+        return false;
+    }
+
+    // nothing need to recevie
+    return IsConn();
+}
+
+inline void Connection::SetSendFlag() {
+    m_send_flag_.store(true);
+}
+
 inline bool Connection::NeedSend() {
-    return IsConn() && m_send_buff_size_ > 0;
+    bool connect_state = m_connected_.load();
+    bool send_flag = m_send_flag_.load();
+
+    // when the connection's send is timeout, close connection
+    if (!send_flag && time(nullptr) - m_prev_sendtime_ >= 5) {
+        CloseConn();
+    }
+
+    return connect_state && send_flag && m_send_buff_size_ > 0;
 }
 
 inline int Connection::TrySend() {
     if (!IsConn())
         return 0;
 
-    std::unique_lock<std::mutex> lck(m_send_buff_mtx_);
-    if (m_send_buff_size_ == 0)
-        return -1;
-
-    // get the len need to send and copy msg to tmp_buff
-    size_t len = m_send_buff_size_ > 1500 ? 1500 : m_send_buff_size_;
-
-    // send with non-blocking mode
-    int sent = send(m_fd_, m_send_buff_, len, MSG_DONTWAIT);
-
-    // send done
-    time_t current_time = time(nullptr);
-    if (sent > 0) {
-        m_prev_sendtime_ = current_time;
-
-        m_send_buff_size_ -= sent;
-        memmove(m_send_buff_, m_send_buff_ + sent, m_send_buff_size_);
-        return sent;
-    }
-    // can't send currently
-    else if (sent < 0 && (errno == EAGAIN || errno == EINTR)) {
-        if (current_time - m_prev_sendtime_ < 5)
+    int sent = 0;
+    {
+        std::unique_lock<std::mutex> lck(m_send_buff_mtx_);
+        if (m_send_buff_size_ == 0)
             return -1;
-        CloseConn();
-        return 0;
+
+        // get the len need to send and copy msg to tmp_buff
+        size_t len = m_send_buff_size_ > 1500 ? 1500 : m_send_buff_size_;
+
+        // send with non-blocking mode
+        sent = send(m_fd_, m_send_buff_, len, MSG_DONTWAIT | MSG_NOSIGNAL);
+
+        // send done
+        if (sent > 0) {
+            m_prev_sendtime_ = time(nullptr);
+
+            m_send_buff_size_ -= sent;
+            memmove(m_send_buff_, m_send_buff_ + sent, m_send_buff_size_);
+            return sent;
+        }
+    }
+    
+    // can't send currently
+    if (sent < 0 && (errno == EAGAIN || errno == EINTR)) {
+        m_send_flag_.store(false);
+        return -1;
     }
     // disconnected
     else {

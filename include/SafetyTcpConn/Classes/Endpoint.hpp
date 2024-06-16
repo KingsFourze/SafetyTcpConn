@@ -7,6 +7,7 @@
 #include <condition_variable>
 #include <functional>
 
+#include <vector>
 #include <unordered_map>
 #include <unordered_set>
 
@@ -26,14 +27,18 @@ private:
     sockaddr_in                             m_sockaddr_;
 
     std::atomic_bool                        m_running_;
-    std::thread                             m_recv_thread_;
+    std::thread                             m_epoll_thread_;
     std::thread                             m_send_thread_;
     const std::function<void(ConnectionPtr)>    m_coninit_func_;
     const std::function<void(ConnectionPtr)>    m_process_func_;
     const std::function<void(ConnectionPtr)>    m_cleanup_func_;
 
+    /// @brief A mutex for locking `Endpoint::m_fd_2_connptrs_`
+    /// @warning `Endpoint::Accept` and `Endpoint::Remove` will lock this mutex and they are calling in `Endpoint::EpollLoop`. Don't lock this mutex inside `Endpoint::EpollLoop` method, it is a safe behave.
     std::mutex                              m_mtx_connptrs_;
     std::condition_variable                 m_cond_connptrs_;
+    /// @brief A map for storing fd and ConnectionPtr pairs
+    /// @note Only `Endpoint::Accept` and `Endpoint::Remove` methods can modify this map. Other methods can only read this map.
     std::unordered_map<int, ConnectionPtr>  m_fd_2_connptrs_;
 public:
     Endpoint(int port, std::function<void(ConnectionPtr)> coninit_func, std::function<void(ConnectionPtr)> process_func, std::function<void(ConnectionPtr)> cleanup_func)
@@ -77,7 +82,7 @@ public:
         event.data.fd = m_sock_fd_;
         epoll_ctl(m_epoll_fd_, EPOLL_CTL_ADD, m_sock_fd_, &event);
 
-        m_recv_thread_ = std::thread(RecvLoop, this);
+        m_epoll_thread_ = std::thread(EpollLoop, this);
         m_send_thread_ = std::thread(SendLoop, this);
     }
 
@@ -96,7 +101,7 @@ public:
         StartTrySend();
 
         // wait all thread stop
-        m_recv_thread_.join();
+        m_epoll_thread_.join();
         m_send_thread_.join();
 
         // close epoll and socket fd
@@ -105,18 +110,29 @@ public:
     }
 
 private:
+    /// @brief Wake the sending loop up.
     void StartTrySend();
 
 private:
+    /// @brief Accept a new connection.
+    /// @note This method is only for `Endpoint::EpollLoop`.
     void Accept();
-
+    /// @brief Remove a disconnected connection.
+    /// @note This method is only for `Endpoint::EpollLoop`.
     void Remove(int fd);
-
+    /// @brief Receive all message in system rx buffer, then run process function.
+    /// @note This method is only for `Endpoint::EpollLoop`.
     void Process(int fd);
+    /// @brief Set connection's send flag to `true`, then call the `Endpoint::StartTrySend` for sending data if send buffer has data.
+    /// @note This method is only for `Endpoint::EpollLoop`.
+    void SetSendFlag(int fd);
 
 private:
-    static void RecvLoop(Endpoint* endpoint);
-
+    /// @brief Running epoll process. Also control the connection map.
+    /// @param endpoint the endpoint need to process
+    static void EpollLoop(Endpoint* endpoint);
+    /// @brief Running sending process.
+    /// @param endpoint the endpoint need to process
     static void SendLoop(Endpoint* endpoint);
 };
 
