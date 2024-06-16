@@ -91,8 +91,13 @@ public:
     /// @brief Enqueue your message to connection's send buffer
     /// @param msg message you want to send
     /// @param len length of message
-    /// @note All the message need to push into the send buff by this method, then the `Endpoint` will send your `msg` if it can.
+    /// @note All the char array message need to push into the send buff by this method, then the `Endpoint` will send your `msg` if it can.
     void MsgEnqueue(const char* msg, const size_t len);
+
+    /// @brief Enqueue your string message to connection's send buffer
+    /// @param msg message you want to send
+    /// @note All the std::string message need to push into the send buff by this method, then the `Endpoint` will send your `msg` if it can.
+    void MsgEnqueue(const std::string msg);
 
 private:
     /// @brief

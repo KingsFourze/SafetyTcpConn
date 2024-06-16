@@ -112,6 +112,10 @@ inline void Connection::MsgEnqueue(const char* msg, const size_t len) {
     m_endpoint_->StartTrySend();
 }
 
+inline void Connection::MsgEnqueue(const std::string msg) {
+    this->MsgEnqueue(msg.c_str(), msg.size());
+}
+
 //==============================
 // Endpoint Control Area
 //==============================
