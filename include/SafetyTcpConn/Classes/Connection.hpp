@@ -20,13 +20,18 @@ namespace SafetyTcpConn {
 
 class Connection {
 private:
+    friend class Core;
     friend class Endpoint;
+
     static constexpr size_t kDefaultSize = 16384;
     static constexpr size_t kMaxSize     = 65536 * 16;
 private:
     std::atomic_bool    m_connected_;
     std::atomic_bool    m_send_flag_;
     time_t              m_prev_sendtime_;
+
+    Core*               m_core_;
+    Endpoint*           m_endpoint_;
 
     // for receiving
     std::mutex          m_recv_buff_mtx_;
@@ -38,37 +43,15 @@ private:
     char*               m_send_buff_;
     size_t              m_send_buff_size_;
     size_t              m_send_buff_allcasize_;
+
+    const std::function<void(ConnectionPtr)> m_coninit_func_;
+    const std::function<void(ConnectionPtr)> m_process_func_;
+    const std::function<void(ConnectionPtr)> m_cleanup_func_;
 public:
-    Endpoint*           m_endpoint_;
     const int           m_fd_;
 
-    Connection(int fd, Endpoint* endpoint) :
-        m_fd_(fd), m_endpoint_(endpoint), m_connected_(true), m_send_flag_(true),
-        m_recv_buff_size_(0), m_recv_buff_allcasize_(kDefaultSize), m_recv_buff_(new char[kDefaultSize]),
-        m_send_buff_size_(0), m_send_buff_allcasize_(kDefaultSize), m_send_buff_(new char[kDefaultSize])
-    {
-        int send_buff_size = 8192;
-        if (setsockopt(m_fd_, SOL_SOCKET, SO_SNDBUF, &send_buff_size, sizeof(send_buff_size)) < 0) {
-            std::cerr << "SafetyTcpConn >> Connection >> Error >> Set Socket Send Buffer Size Failure." << std::endl;
-            CloseConn();
-            return;
-        }
-
-        int cork = 1;
-        if (setsockopt(m_fd_, IPPROTO_TCP, TCP_CORK, &cork, sizeof(cork)) < 0) {
-            std::cerr << "SafetyTcpConn >> Connection >> Error >> Set Socket Send Buffer Size Failure." << std::endl;
-            CloseConn();
-            return;
-        }
-    }
-
-    ~Connection() {
-        // close connection if not close
-        CloseConn();
-        // release buffer
-        delete [] m_recv_buff_;
-        delete [] m_send_buff_;
-    }
+    Connection(int fd, Endpoint* endpoint);
+    ~Connection();
 
     /// @brief Get the alive status of the connection
     /// @return `bool`: connection alive(`true`) / closed(`false`)

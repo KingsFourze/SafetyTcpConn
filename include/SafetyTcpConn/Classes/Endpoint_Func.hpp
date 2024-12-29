@@ -5,24 +5,70 @@
 
 namespace SafetyTcpConn {
 
-//==============================
-// Connection Control Area
-//==============================
+Endpoint::Endpoint(Core* core, int port, std::function<void(ConnectionPtr)> coninit_func, std::function<void(ConnectionPtr)> process_func, std::function<void(ConnectionPtr)> cleanup_func)
+        : m_core_(core), m_port_(port), m_coninit_func_(coninit_func), m_process_func_(process_func), m_cleanup_func_(cleanup_func)
+{
+    if (m_port_ < 1 || m_port_ > 65535){
+        std::cerr << "SafetyTcpConn >> Endpoint >> Error >> Port: " << m_port_ << " is not Avaliable." << std::endl;
+        exit(EXIT_FAILURE);
+    }
 
-inline void Endpoint::StartTrySend() {
-    std::unique_lock<std::mutex> lck(m_mtx_connptrs_);
-    m_cond_connptrs_.notify_one();
+    m_sockaddr_.sin_port = htons(m_port_);
+    m_sockaddr_.sin_family = AF_INET;
+    m_sockaddr_.sin_addr.s_addr = htons(INADDR_ANY);
+
+    // create socket
+    m_fd_ = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+
+    // set address reuse
+    const int reuse_addr = 1;
+    if (setsockopt(m_fd_, SOL_SOCKET, SO_REUSEADDR, &reuse_addr, sizeof(int)) < 0) {
+        std::cerr << "SafetyTcpConn >> Endpoint >> Error >> Socket Set SO_REUSEADDR Failure." << std::endl;
+        exit(EXIT_FAILURE);
+    }
+
+    // bind socket
+    if (bind(m_fd_, (sockaddr *)&m_sockaddr_, sizeof(m_sockaddr_)) < 0) {
+        std::cerr << "SafetyTcpConn >> Endpoint >> Error >> Socket Bind Failure." << std::endl;
+        exit(EXIT_FAILURE);
+    }
+
+    // listen socket
+    if (listen(m_fd_, 16) == -1) {
+        std::cerr << "SafetyTcpConn >> Endpoint >> Error >> Socket Listen Failure." << std::endl;
+        exit(EXIT_FAILURE);
+    }
+
+    m_core_->RegisterEndpoint(this);
+}
+
+Endpoint::~Endpoint(){
+    // unregister from core
+    m_core_->UnregisterEndpoint(m_fd_);
+
+    // close socket fd
+    close(m_fd_);
+
+    // close all connection
+    {
+        std::unique_lock<std::mutex> lck(m_mtx_connptrs_);
+        for (auto it = m_fd_2_connptrs_.begin(); it != m_fd_2_connptrs_.end(); it++)
+            it->second->CloseConn();
+    }
+
+    // wake send thread up
+    m_core_->StartTrySend();
 }
 
 //==============================
 // Endpoint Control Area
 //==============================
 
-inline void Endpoint::Accept() {
+inline ConnectionPtr Endpoint::Accept() {
     // accept connection
     sockaddr_in client_sockaddr{};
     socklen_t length = sizeof(client_sockaddr);
-    int client_fd = accept(m_sock_fd_, (sockaddr *) &client_sockaddr, &length);
+    int client_fd = accept(m_fd_, (sockaddr *) &client_sockaddr, &length);
 
     // create connection instance
     ConnectionPtr conn = std::make_shared<Connection>(client_fd, this);
@@ -33,14 +79,7 @@ inline void Endpoint::Accept() {
         m_fd_2_connptrs_[conn->m_fd_] = conn;
     }
 
-    // epoll subscribe to client
-    epoll_event client_event{};
-    client_event.events = EPOLLIN | EPOLLOUT | EPOLLERR | EPOLLHUP | EPOLLRDHUP | EPOLLET;
-    client_event.data.fd = conn->m_fd_;
-    epoll_ctl(m_epoll_fd_, EPOLL_CTL_ADD, conn->m_fd_, &client_event);
-
-    // run connection init function
-    m_coninit_func_(conn);
+    return conn;
 }
 
 inline void Endpoint::Remove(int fd) {
@@ -53,152 +92,8 @@ inline void Endpoint::Remove(int fd) {
     conn = it->second;
 
     // remove from connection ptr map
-    {
-        std::unique_lock<std::mutex> lck(m_mtx_connptrs_);
-        m_fd_2_connptrs_.erase(it);
-    }
-
-    // unsubscribe from epoll
-    epoll_ctl(m_epoll_fd_, EPOLL_CTL_DEL, conn->m_fd_, nullptr);
-    
-    // close connection and run cleanup function
-    conn->CloseConn();
-    m_cleanup_func_(conn);
-}
-
-inline void Endpoint::Process(int fd) {
-    ConnectionPtr conn;
-
-    // try get connection ptr
-    auto it = m_fd_2_connptrs_.find(fd);
-    if (it == m_fd_2_connptrs_.end())
-        return;
-    conn = it->second;
-
-    // connection receive message
-    if (conn->TryRecv()) {
-        // run process function
-        m_process_func_(conn);
-    }
-}
-
-inline void Endpoint::SetSendFlag(int fd) {
-    ConnectionPtr conn;
-
-    // try get connection ptr
-    auto it = m_fd_2_connptrs_.find(fd);
-    if (it == m_fd_2_connptrs_.end())
-        return;
-    conn = it->second;
-
-    // set the send flag to true, make the connection can send
-    conn->SetSendFlag();
-
-    // call the send thread try to send
-    this->StartTrySend();
-}
-
-//==============================
-// Endpoint Main Process Area
-//==============================
-
-inline void Endpoint::EpollLoop(Endpoint* endpoint) {
-    constexpr int kMaxEventSize = 32;
-    epoll_event epoll_events[kMaxEventSize];
-
-    int event_count = 0;
-    while (endpoint->m_running_.load()) {
-        event_count = epoll_wait(endpoint->m_epoll_fd_, epoll_events, kMaxEventSize, 1000);
-        if (event_count == -1) {
-            std::cerr << "SafetyTcpConn >> Endpoint >> Error >> Epoll Error!" << std::endl;
-            exit(EXIT_FAILURE);
-        }
-
-        // scan and remove locally closed connection
-        {
-            // find all locally closed connection
-            std::vector<ConnectionPtr> locally_closed_connections;
-            for (auto it = endpoint->m_fd_2_connptrs_.begin(); it != endpoint->m_fd_2_connptrs_.end(); it++) {
-                const ConnectionPtr& conn = it->second;
-                if (conn->IsConn()) 
-                    continue;
-                locally_closed_connections.push_back(conn);
-            }
-
-            // run normal cleanup funtion
-            for (int i = 0; i < locally_closed_connections.size(); i++) {
-                const ConnectionPtr& conn = locally_closed_connections.at(i);
-                endpoint->Remove(conn->m_fd_);
-            }
-        }
-
-        for (int i = 0; i < event_count; i++) {
-            // Accept Client
-            if (epoll_events[i].data.fd == endpoint->m_sock_fd_)
-                endpoint->Accept();
-            // Error or Disconnect
-            else if (epoll_events[i].events & EPOLLERR || epoll_events[i].events & EPOLLHUP || epoll_events[i].events & EPOLLRDHUP)
-                endpoint->Remove(epoll_events[i].data.fd);
-            // Data Coming
-            else if (epoll_events[i].events & EPOLLIN)
-                endpoint->Process(epoll_events[i].data.fd);
-            // Send Avaliable
-            else if (epoll_events[i].events & EPOLLOUT)
-                endpoint->SetSendFlag(epoll_events[i].data.fd);
-        }
-    }
-}
-
-inline void Endpoint::SendLoop(Endpoint* endpoint) {
-    std::unordered_set<ConnectionPtr> need_to_send;
-    std::unordered_set<ConnectionPtr> no_need_to_send;
-
-    while (true) {
-
-        // update need_to_send set
-        {
-            std::unique_lock<std::mutex> lck(endpoint->m_mtx_connptrs_);
-
-            start_update_set:
-            // check running state before update need_to_send set
-            if (!endpoint->m_running_.load())
-                break;
-
-            for (auto it = endpoint->m_fd_2_connptrs_.begin(); it != endpoint->m_fd_2_connptrs_.end(); it++) {
-                const ConnectionPtr& conn = it->second;
-
-                if (conn->NeedSend() && need_to_send.find(conn) == need_to_send.end())
-                    need_to_send.emplace(conn);
-            }
-
-            // nothing need to send, wait
-            if (need_to_send.size() == 0) {
-                endpoint->m_cond_connptrs_.wait_for(lck, std::chrono::milliseconds(1));
-                goto start_update_set; // this can save time on unlocking and relocking
-            }
-        }
-
-        // call TrySend for connection in need_to_send set
-        uint32_t send_success_count = 0;
-        for (auto it = need_to_send.begin(); it != need_to_send.end(); it++) {
-            const ConnectionPtr& conn = *it;
-            
-            // sent messages until can't send
-            int quota = 10; // fair usage policy
-            while (quota-- > 0) {
-                if (conn->TrySend() <= 0) {
-                    no_need_to_send.emplace(conn);
-                    break;
-                }
-                send_success_count++;
-            }
-        }
-
-        // remove no_need_to_send connection from need_to_send set
-        for (auto it = no_need_to_send.begin(); it != no_need_to_send.end(); it++)
-            need_to_send.erase(*it);
-        no_need_to_send.clear();
-    }
+    std::unique_lock<std::mutex> lck(m_mtx_connptrs_);
+    m_fd_2_connptrs_.erase(it);
 }
 
 }

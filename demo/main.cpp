@@ -6,8 +6,11 @@
 using namespace SafetyTcpConn;
 
 int main(int, char**) {
+    Core core;
 
-    Endpoint endpoint(8080,
+    
+
+    Endpoint endpoint(&core, 8080,
         [](ConnectionPtr conn) {
             std::cout << "SafetyTcpConn >> Endpoint >> Client Connected | FD:" << conn->m_fd_ << std::endl;
 

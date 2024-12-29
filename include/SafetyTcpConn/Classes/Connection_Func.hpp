@@ -10,6 +10,36 @@ namespace SafetyTcpConn {
 //==============================
 // Public Area
 //==============================
+
+Connection::Connection(int fd, Endpoint* endpoint) :
+    m_fd_(fd), m_endpoint_(endpoint), m_core_(endpoint->m_core_), m_connected_(true), m_send_flag_(true),
+    m_recv_buff_size_(0), m_recv_buff_allcasize_(kDefaultSize), m_recv_buff_(new char[kDefaultSize]),
+    m_send_buff_size_(0), m_send_buff_allcasize_(kDefaultSize), m_send_buff_(new char[kDefaultSize]),
+    m_coninit_func_(endpoint->m_coninit_func_), m_process_func_(endpoint->m_process_func_), m_cleanup_func_(endpoint->m_cleanup_func_)
+{
+    int send_buff_size = 8192;
+    if (setsockopt(m_fd_, SOL_SOCKET, SO_SNDBUF, &send_buff_size, sizeof(send_buff_size)) < 0) {
+        std::cerr << "SafetyTcpConn >> Connection >> Error >> Set Socket Send Buffer Size Failure." << std::endl;
+        CloseConn();
+        return;
+    }
+
+    int cork = 1;
+    if (setsockopt(m_fd_, IPPROTO_TCP, TCP_CORK, &cork, sizeof(cork)) < 0) {
+        std::cerr << "SafetyTcpConn >> Connection >> Error >> Set Socket Send Buffer Size Failure." << std::endl;
+        CloseConn();
+        return;
+    }
+}
+
+Connection::~Connection() {
+    // close connection if not close
+    CloseConn();
+    // release buffer
+    delete [] m_recv_buff_;
+    delete [] m_send_buff_;
+}
+
 inline bool Connection::IsConn() {
     return m_connected_.load();
 }
@@ -109,7 +139,7 @@ inline void Connection::MsgEnqueue(const char* msg, const size_t len) {
         m_send_buff_size_ = total_data_len;
     }
 
-    m_endpoint_->StartTrySend();
+    m_core_->StartTrySend();
 }
 
 inline void Connection::MsgEnqueue(const std::string msg) {
