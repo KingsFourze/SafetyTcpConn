@@ -11,7 +11,7 @@ int main(int, char**) {
     EndpointPtr endpoint = Endpoint::CreateEndpoint(&core, 8080,
         [](ConnectionPtr conn) {
             std::cout << "SafetyTcpConnDemo >> Main >> Client Connected | FD:" << conn->m_fd_ << std::endl;
-
+            // you can store the ConnectionPtr to your own data structure
         },
         [](ConnectionPtr conn) {
             std::cout << "SafetyTcpConnDemo >> Main >> Message Come | FD:" << conn->m_fd_ << std::endl;
@@ -30,6 +30,7 @@ int main(int, char**) {
         },
         [](ConnectionPtr conn) {
             std::cout << "SafetyTcpConnDemo >> Main >> Client Disconnected | FD:" << conn->m_fd_ << std::endl;
+            // remove the ConnectionPtr from your own data structure
         }
     );
 
