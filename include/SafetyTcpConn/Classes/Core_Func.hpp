@@ -9,18 +9,30 @@
 
 namespace SafetyTcpConn {
 
-Core::Core() {
+Core::Core() : m_open_(true) {
     if ((m_epoll_fd_ = epoll_create(1)) == -1) {
         std::cout << "SafetyTcpConn >> Core >> Error >> Can't create Epoll" << std::endl;
         exit(EXIT_FAILURE);
     }
 
-    std::cout << "SafetyTcpConn >> Core >> Epoll Create Success" << std::endl;
+    std::cout << "SafetyTcpConn >> Core >> Epoll Create Success | Epoll FD: " << m_epoll_fd_ << std::endl;
     m_epoll_thread_ = std::thread(EpollLoop, this);
     m_send_thread_ = std::thread(SendLoop, this);
 }
 
-inline void Core::RegisterEndpoint(Endpoint* endpoint) {
+Core::~Core() {
+    m_open_.store(false);
+
+    // wake up send thread
+    StartTrySend();
+
+    m_epoll_thread_.join();
+    m_send_thread_.join();
+
+    std::cout << "SafetyTcpConn >> Core >> Safety Clean | Epoll FD: " << m_epoll_fd_ << std::endl;
+}
+
+inline void Core::RegisterEndpoint(EndpointPtr endpoint) {
     {
         std::unique_lock<std::mutex> lck(m_mtx_endpoints_);
         m_fd_2_endpoints_[endpoint->m_fd_] = endpoint;
@@ -33,10 +45,10 @@ inline void Core::RegisterEndpoint(Endpoint* endpoint) {
 }
 
 inline void Core::UnregisterEndpoint(const int endpoint_fd) {
-    Endpoint* endpoint = nullptr;
+    EndpointPtr endpoint = nullptr;
     {
         std::unique_lock<std::mutex> lck(m_mtx_endpoints_);
-        // try get connection ptr
+        // try get endpoint ptr
         auto it = m_fd_2_endpoints_.find(endpoint_fd);
         if (it == m_fd_2_endpoints_.end())
             return;
@@ -88,8 +100,9 @@ inline void Core::UnregisterConnection(const int conn_fd) {
     epoll_ctl(m_epoll_fd_, EPOLL_CTL_DEL, conn->m_fd_, nullptr);
 
     // remove from endpoint
-    if (conn->m_endpoint_ != nullptr)
-        conn->m_endpoint_->Remove(conn->m_fd_);
+    EndpointPtr endpoint = conn->m_endpoint_.lock();
+    if (endpoint != nullptr)
+        Endpoint::Remove(endpoint, conn->m_fd_);
     
     // close connection and run cleanup function
     conn->CloseConn();
@@ -106,9 +119,8 @@ inline void Core::EpollLoop(Core* core) {
     epoll_event epoll_events[kMaxEventSize];
 
     int event_count = 0;
-    while (true) {
-        event_count = epoll_wait(core->m_epoll_fd_, epoll_events, kMaxEventSize, 1000);
-        if (event_count == -1) {
+    while (core->m_open_.load()) {
+        if ((event_count = epoll_wait(core->m_epoll_fd_, epoll_events, kMaxEventSize, 1000)) == -1) {
             std::cerr << "SafetyTcpConn >> Endpoint >> Error >> Epoll Error!" << std::endl;
             exit(EXIT_FAILURE);
         }
@@ -133,20 +145,21 @@ inline void Core::EpollLoop(Core* core) {
 
         for (int i = 0; i < event_count; i++) {
             // find endpoint from endpoint maps with fd
-            Endpoint* endpoint = nullptr;
+            EndpointPtr endpoint = nullptr;
             {
                 std::unique_lock<std::mutex> lck_endpoints(core->m_mtx_endpoints_);
-
                 auto it_endpoints = core->m_fd_2_endpoints_.find(epoll_events[i].data.fd);
+
+                // endpoint found
                 if (it_endpoints != core->m_fd_2_endpoints_.end())
                     endpoint = it_endpoints->second;
             }
 
-            // endpoint found
-            if (endpoint != nullptr) {
-                // Accept Client
-                ConnectionPtr conn = endpoint->Accept();
-                core->RegisterConnection(conn);
+            // endpoint found, accept connection
+            if (endpoint.get() != nullptr) {
+                ConnectionPtr conn = Endpoint::Accept(endpoint);
+                if (conn != nullptr)
+                    core->RegisterConnection(conn);
                 continue;
             }
 
@@ -187,13 +200,15 @@ inline void Core::EpollLoop(Core* core) {
             }
         }
     }
+
+    std::cout << "SafetyTcpConn >> Core >> Epoll Thread Ended | Epoll FD: " << core->m_epoll_fd_ << std::endl;
 }
 
 inline void Core::SendLoop(Core* core) {
     std::unordered_set<ConnectionPtr> need_to_send;
     std::unordered_set<ConnectionPtr> no_need_to_send;
 
-    while (true) {
+    while (core->m_open_.load()) {
         // update need_to_send set
         {
             std::unique_lock<std::mutex> lck(core->m_mtx_connptrs_);
@@ -209,6 +224,9 @@ inline void Core::SendLoop(Core* core) {
             // nothing need to send, wait
             if (need_to_send.size() == 0) {
                 core->m_cond_connptrs_.wait_for(lck, std::chrono::milliseconds(1));
+                if (!core->m_open_.load())
+                    break;
+
                 goto start_update_set; // this can save time on unlocking and relocking
             }
         }
@@ -234,6 +252,8 @@ inline void Core::SendLoop(Core* core) {
             need_to_send.erase(*it);
         no_need_to_send.clear();
     }
+
+    std::cout << "SafetyTcpConn >> Core >> Send Thread Ended | Epoll FD: " << core->m_epoll_fd_ << std::endl;
 }
 
 }

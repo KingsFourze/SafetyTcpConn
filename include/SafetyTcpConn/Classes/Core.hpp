@@ -4,6 +4,7 @@
 #include <iostream>
 #include <thread>
 #include <mutex>
+#include <atomic>
 #include <condition_variable>
 #include <functional>
 #include <unordered_map>
@@ -17,21 +18,24 @@ private:
     friend class Endpoint;
     friend class Connection;
 
+    std::atomic_bool m_open_;
+
     int m_epoll_fd_;
     std::thread m_epoll_thread_;
     std::thread m_send_thread_;
 
     std::mutex m_mtx_endpoints_;
-    std::unordered_map<int, Endpoint*> m_fd_2_endpoints_;
+    std::unordered_map<int, EndpointPtr> m_fd_2_endpoints_;
 
     std::mutex m_mtx_connptrs_;
     std::condition_variable m_cond_connptrs_;
     std::unordered_map<int, ConnectionPtr> m_fd_2_connptrs_;
 public:
     Core();
+    ~Core();
 
 private:
-    void RegisterEndpoint(Endpoint* endpoint);
+    void RegisterEndpoint(EndpointPtr endpoint);
     void UnregisterEndpoint(const int endpoint_fd);
     
     void RegisterConnection(ConnectionPtr& conn);

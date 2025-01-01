@@ -22,6 +22,7 @@ class Connection {
 private:
     friend class Core;
     friend class Endpoint;
+    friend class std::shared_ptr<Connection>;
 
     static constexpr size_t kDefaultSize = 16384;
     static constexpr size_t kMaxSize     = 65536 * 16;
@@ -30,8 +31,8 @@ private:
     std::atomic_bool    m_send_flag_;
     time_t              m_prev_sendtime_;
 
-    Core*               m_core_;
-    Endpoint*           m_endpoint_;
+    Core*                   m_core_;
+    std::weak_ptr<Endpoint> m_endpoint_;
 
     // for receiving
     std::mutex          m_recv_buff_mtx_;
@@ -50,7 +51,10 @@ private:
 public:
     const int           m_fd_;
 
-    Connection(int fd, Endpoint* endpoint);
+private:
+    Connection(int fd, EndpointPtr& endpoint);
+
+public:
     ~Connection();
 
     /// @brief Get the alive status of the connection

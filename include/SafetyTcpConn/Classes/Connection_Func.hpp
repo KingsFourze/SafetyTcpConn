@@ -7,11 +7,7 @@
 
 namespace SafetyTcpConn {
 
-//==============================
-// Public Area
-//==============================
-
-Connection::Connection(int fd, Endpoint* endpoint) :
+Connection::Connection(int fd, EndpointPtr& endpoint) :
     m_fd_(fd), m_endpoint_(endpoint), m_core_(endpoint->m_core_), m_connected_(true), m_send_flag_(true),
     m_recv_buff_size_(0), m_recv_buff_allcasize_(kDefaultSize), m_recv_buff_(new char[kDefaultSize]),
     m_send_buff_size_(0), m_send_buff_allcasize_(kDefaultSize), m_send_buff_(new char[kDefaultSize]),
@@ -31,6 +27,10 @@ Connection::Connection(int fd, Endpoint* endpoint) :
         return;
     }
 }
+
+//==============================
+// Public Area
+//==============================
 
 Connection::~Connection() {
     // close connection if not close

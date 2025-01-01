@@ -8,15 +8,13 @@ using namespace SafetyTcpConn;
 int main(int, char**) {
     Core core;
 
-    
-
-    Endpoint endpoint(&core, 8080,
+    EndpointPtr endpoint = Endpoint::CreateEndpoint(&core, 8080,
         [](ConnectionPtr conn) {
-            std::cout << "SafetyTcpConn >> Endpoint >> Client Connected | FD:" << conn->m_fd_ << std::endl;
+            std::cout << "SafetyTcpConnDemo >> Main >> Client Connected | FD:" << conn->m_fd_ << std::endl;
 
         },
         [](ConnectionPtr conn) {
-            std::cout << "SafetyTcpConn >> Endpoint >> Message Come | FD:" << conn->m_fd_ << std::endl;
+            std::cout << "SafetyTcpConnDemo >> Main >> Message Come | FD:" << conn->m_fd_ << std::endl;
 
             bool keep_read = true;
             while (keep_read) {
@@ -31,12 +29,19 @@ int main(int, char**) {
             }
         },
         [](ConnectionPtr conn) {
-            std::cout << "SafetyTcpConn >> Endpoint >> Client Disconnected | FD:" << conn->m_fd_ << std::endl;
+            std::cout << "SafetyTcpConnDemo >> Main >> Client Disconnected | FD:" << conn->m_fd_ << std::endl;
         }
     );
 
     // while loop to keep endpoint running
-    while(true) usleep(1000);
+    int count = 0;
+    while(count++ < 10) {
+        std::cout << "SafetyTcpConnDemo >> Main >> Running...(" << count << ")" << std::endl;
+        sleep(1);
+    }
+
+    endpoint->CloseEndpoint();
+    endpoint.reset();
 
     return 0;
 }

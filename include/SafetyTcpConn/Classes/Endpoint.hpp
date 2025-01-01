@@ -21,7 +21,9 @@ class Endpoint {
 private:
     friend class Core;
     friend class Connection;
+    friend class std::shared_ptr<Endpoint>;
 
+    std::atomic_bool                        m_open_;
     Core*                                   m_core_;
     const int                               m_port_;
     int                                     m_fd_;
@@ -34,13 +36,19 @@ private:
 
     std::mutex                              m_mtx_connptrs_;
     std::unordered_map<int, ConnectionPtr>  m_fd_2_connptrs_;
-public:
+private:
     Endpoint(Core* core, int port, std::function<void(ConnectionPtr)> coninit_func, std::function<void(ConnectionPtr)> process_func, std::function<void(ConnectionPtr)> cleanup_func);
+
+public:
     ~Endpoint();
 
+    bool IsOpen();
+    void CloseEndpoint();
+
+    static EndpointPtr CreateEndpoint(Core* core, int port, std::function<void(ConnectionPtr)> coninit_func, std::function<void(ConnectionPtr)> process_func, std::function<void(ConnectionPtr)> cleanup_func);
 private:
-    ConnectionPtr Accept();
-    void Remove(int fd);
+    static ConnectionPtr Accept(EndpointPtr& endpoint);
+    static void Remove(EndpointPtr& endpoint, int fd);
 };
 
 }
