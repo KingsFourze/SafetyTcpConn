@@ -8,6 +8,7 @@
 namespace SafetyTcpConn {
 
 Connection::Connection(int fd, EndpointPtr& endpoint) :
+    Container(ContainerType::kConnection),
     m_fd_(fd), m_endpoint_(endpoint), m_core_(endpoint->m_core_), m_connected_(true), m_send_flag_(true),
     m_recv_buff_size_(0), m_recv_buff_allcasize_(kDefaultSize), m_recv_buff_(new char[kDefaultSize]),
     m_send_buff_size_(0), m_send_buff_allcasize_(kDefaultSize), m_send_buff_(new char[kDefaultSize]),
@@ -171,6 +172,9 @@ inline bool Connection::ExtendBuffer(char*& buff_ptr, size_t future_size, size_t
         // replace buff ptr and allocated size
         buff_ptr = new_buff;
         allocsize = target_buff_allocsize;
+
+        // release old buff memory
+        delete [] old_buff;
     }
 
     return true;

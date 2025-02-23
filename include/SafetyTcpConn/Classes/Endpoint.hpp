@@ -13,11 +13,12 @@
 
 #include "Classes.hpp"
 #include "Core.hpp"
+#include "Container.hpp"
 #include "Connection.hpp"
 
 namespace SafetyTcpConn {
 
-class Endpoint {
+class Endpoint : public Container {
 private:
     friend class Core;
     friend class Connection;

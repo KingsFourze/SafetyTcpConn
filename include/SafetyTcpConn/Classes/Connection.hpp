@@ -15,10 +15,11 @@
 #include <unistd.h>
 
 #include "Classes.hpp"
+#include "Container.hpp"
 
 namespace SafetyTcpConn {
 
-class Connection {
+class Connection : public Container {
 private:
     friend class Core;
     friend class Endpoint;

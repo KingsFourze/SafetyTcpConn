@@ -5,8 +5,10 @@
 
 namespace SafetyTcpConn {
 
-Endpoint::Endpoint(Core* core, int port, std::function<void(ConnectionPtr)> coninit_func, std::function<void(ConnectionPtr)> process_func, std::function<void(ConnectionPtr)> cleanup_func)
-        : m_core_(core), m_port_(port), m_open_(true), m_coninit_func_(coninit_func), m_process_func_(process_func), m_cleanup_func_(cleanup_func)
+Endpoint::Endpoint(Core* core, int port, std::function<void(ConnectionPtr)> coninit_func, std::function<void(ConnectionPtr)> process_func, std::function<void(ConnectionPtr)> cleanup_func) :
+    Container(ContainerType::kEndpoint),
+    m_core_(core), m_port_(port), m_open_(true),
+    m_coninit_func_(coninit_func), m_process_func_(process_func), m_cleanup_func_(cleanup_func)
 {
     if (m_port_ < 1 || m_port_ > 65535) {
         std::cerr << "SafetyTcpConn >> Endpoint >> Error >> Port: " << m_port_ << " is not Avaliable." << std::endl;
@@ -51,8 +53,10 @@ inline EndpointPtr Endpoint::CreateEndpoint(Core* core, int port, std::function<
     EndpointPtr endpoint = std::shared_ptr<Endpoint>(
         new Endpoint(core, port, coninit_func, process_func, cleanup_func)
     );
+    
+    ContainerPtr container = std::static_pointer_cast<Container>(endpoint);
+    core->RegisterContainer(container);
 
-    core->RegisterEndpoint(endpoint);
     return endpoint;
 }
 
@@ -73,7 +77,7 @@ inline void Endpoint::CloseEndpoint() {
     }
 
     // unregister from core, stop accept new connection
-    m_core_->UnregisterEndpoint(m_fd_);
+    m_core_->UnregisterContainer(m_fd_);
 
     // close all connection
     {
@@ -104,7 +108,7 @@ inline ConnectionPtr Endpoint::Accept(EndpointPtr& endpoint) {
     ConnectionPtr conn = std::shared_ptr<Connection>(new Connection(client_fd, endpoint));
     endpoint->m_fd_2_connptrs_[conn->m_fd_] = conn;
 
-    return std::move(conn);
+    return conn;
 }
 
 inline void Endpoint::Remove(EndpointPtr& endpoint, int fd) {

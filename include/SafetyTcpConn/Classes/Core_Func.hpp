@@ -32,86 +32,84 @@ Core::~Core() {
     std::cout << "SafetyTcpConn >> Core >> Safety Clean | Epoll FD: " << m_epoll_fd_ << std::endl;
 }
 
-inline void Core::RegisterEndpoint(EndpointPtr endpoint) {
-    {
-        std::unique_lock<std::mutex> lck(m_mtx_endpoints_);
-        m_fd_2_endpoints_[endpoint->m_fd_] = endpoint;
-    }
+void Core::RegisterContainer(ContainerPtr& container) {
+    if (container.get() == nullptr)
+        return;
 
-    epoll_event event{};
-    event.events = EPOLLIN;
-    event.data.fd = endpoint->m_fd_;
-    epoll_ctl(m_epoll_fd_, EPOLL_CTL_ADD, endpoint->m_fd_, &event);
+    if (container->m_type_ == ContainerType::kEndpoint) {
+        EndpointPtr endpoint = std::static_pointer_cast<Endpoint>(container);
+
+        {
+            std::unique_lock<std::mutex> lck(m_mtx_containers_);
+            m_fd_2_containers_[endpoint->m_fd_] = container;
+        }
+
+        epoll_event event{};
+        event.events = EPOLLIN;
+        event.data.fd = endpoint->m_fd_;
+        epoll_ctl(m_epoll_fd_, EPOLL_CTL_ADD, endpoint->m_fd_, &event);
+    }
+    else {
+        ConnectionPtr conn = std::static_pointer_cast<Connection>(container);
+
+        // add into connection ptr map
+        {
+            std::unique_lock<std::mutex> lck(m_mtx_containers_);
+            m_fd_2_containers_[conn->m_fd_] = container;
+        }
+
+        // epoll subscribe to client
+        epoll_event client_event{};
+        client_event.events = EPOLLIN | EPOLLOUT | EPOLLERR | EPOLLHUP | EPOLLRDHUP | EPOLLET;
+        client_event.data.fd = conn->m_fd_;
+        epoll_ctl(m_epoll_fd_, EPOLL_CTL_ADD, conn->m_fd_, &client_event);
+
+        // run connection init function
+        conn->m_coninit_func_(conn);
+    }
 }
 
-inline void Core::UnregisterEndpoint(const int endpoint_fd) {
-    EndpointPtr endpoint = nullptr;
+void Core::UnregisterContainer(const int container_fd) {
+    ContainerPtr container = nullptr;
     {
-        std::unique_lock<std::mutex> lck(m_mtx_endpoints_);
-        // try get endpoint ptr
-        auto it = m_fd_2_endpoints_.find(endpoint_fd);
-        if (it == m_fd_2_endpoints_.end())
+        std::unique_lock<std::mutex> lck(m_mtx_containers_);
+        // try get container ptr
+        auto it = m_fd_2_containers_.find(container_fd);
+        if (it == m_fd_2_containers_.end())
             return;
 
-        endpoint = it->second;
+        container = it->second;
 
         // remove from connection ptr map
-        m_fd_2_endpoints_.erase(it);
+        m_fd_2_containers_.erase(it);
     }
 
-    // unsubscribe from epoll
-    epoll_ctl(m_epoll_fd_, EPOLL_CTL_DEL, endpoint->m_fd_, nullptr);
-}
+    if (container->m_type_ == ContainerType::kEndpoint) {
+        EndpointPtr endpoint = std::static_pointer_cast<Endpoint>(container);
 
-inline void Core::RegisterConnection(ConnectionPtr& conn) {
-    // add into connection ptr map
-    {
-        std::unique_lock<std::mutex> lck(m_mtx_connptrs_);
-        m_fd_2_connptrs_[conn->m_fd_] = conn;
+        // unsubscribe from epoll
+        epoll_ctl(m_epoll_fd_, EPOLL_CTL_DEL, endpoint->m_fd_, nullptr);
     }
+    else {
+        ConnectionPtr conn = std::static_pointer_cast<Connection>(container);
+        
+        // unsubscribe from epoll
+        epoll_ctl(m_epoll_fd_, EPOLL_CTL_DEL, conn->m_fd_, nullptr);
 
-    // epoll subscribe to client
-    epoll_event client_event{};
-    client_event.events = EPOLLIN | EPOLLOUT | EPOLLERR | EPOLLHUP | EPOLLRDHUP | EPOLLET;
-    client_event.data.fd = conn->m_fd_;
-    epoll_ctl(m_epoll_fd_, EPOLL_CTL_ADD, conn->m_fd_, &client_event);
-
-    // run connection init function
-    conn->m_coninit_func_(conn);
-}
-
-inline void Core::UnregisterConnection(const int conn_fd) {
-    ConnectionPtr conn;
-    {
-        std::unique_lock<std::mutex> lck(m_mtx_connptrs_);
-
-        // try get connection ptr
-        auto it = m_fd_2_connptrs_.find(conn_fd);
-        if (it == m_fd_2_connptrs_.end())
-            return;
-
-        conn = it->second;
-
-        // remove from connection ptr map
-        m_fd_2_connptrs_.erase(it);
+        // remove from endpoint
+        EndpointPtr endpoint = conn->m_endpoint_.lock();
+        if (endpoint != nullptr) // ready for client mode
+            Endpoint::Remove(endpoint, conn->m_fd_);
+        
+        // close connection and run cleanup function
+        conn->CloseConn();
+        conn->m_cleanup_func_(conn);
     }
-
-    // unsubscribe from epoll
-    epoll_ctl(m_epoll_fd_, EPOLL_CTL_DEL, conn->m_fd_, nullptr);
-
-    // remove from endpoint
-    EndpointPtr endpoint = conn->m_endpoint_.lock();
-    if (endpoint != nullptr)
-        Endpoint::Remove(endpoint, conn->m_fd_);
-    
-    // close connection and run cleanup function
-    conn->CloseConn();
-    conn->m_cleanup_func_(conn);
 }
 
 inline void Core::StartTrySend() {
-    std::unique_lock<std::mutex> lck(m_mtx_connptrs_);
-    m_cond_connptrs_.notify_one();
+    std::unique_lock<std::mutex> lck(m_mtx_containers_);
+    m_cond_containers_.notify_one();
 }
 
 inline void Core::EpollLoop(Core* core) {
@@ -129,9 +127,12 @@ inline void Core::EpollLoop(Core* core) {
         {
             // find all locally closed connection
             std::vector<ConnectionPtr> locally_closed_connections;
-            for (auto it = core->m_fd_2_connptrs_.begin(); it != core->m_fd_2_connptrs_.end(); it++) {
-                ConnectionPtr& conn = it->second;
-                if (conn->IsConn()) 
+            for (auto it = core->m_fd_2_containers_.begin(); it != core->m_fd_2_containers_.end(); it++) {
+                ContainerPtr& container = it->second;
+                if (container->m_type_!=ContainerType::kConnection)
+                    continue;
+                ConnectionPtr conn = std::static_pointer_cast<Connection>(container);
+                if (conn->IsConn())
                     continue;
                 locally_closed_connections.push_back(conn);
             }
@@ -139,64 +140,53 @@ inline void Core::EpollLoop(Core* core) {
             // run normal cleanup funtion
             for (int i = 0; i < locally_closed_connections.size(); i++) {
                 ConnectionPtr& conn = locally_closed_connections.at(i);
-                core->UnregisterConnection(conn->m_fd_);
+                core->UnregisterContainer(conn->m_fd_);
             }
         }
 
         for (int i = 0; i < event_count; i++) {
-            // find endpoint from endpoint maps with fd
-            EndpointPtr endpoint = nullptr;
-            {
-                std::unique_lock<std::mutex> lck_endpoints(core->m_mtx_endpoints_);
-                auto it_endpoints = core->m_fd_2_endpoints_.find(epoll_events[i].data.fd);
+            const int target_fd = epoll_events[i].data.fd;
 
-                // endpoint found
-                if (it_endpoints != core->m_fd_2_endpoints_.end())
-                    endpoint = it_endpoints->second;
+            // get container from container map
+            ContainerPtr container;
+            {
+                std::unique_lock<std::mutex> lck(core->m_mtx_containers_);
+                auto it_containers = core->m_fd_2_containers_.find(target_fd);
+
+                // container found
+                if (it_containers == core->m_fd_2_containers_.end())
+                    continue;
+                container = it_containers->second;
             }
 
             // endpoint found, accept connection
-            if (endpoint.get() != nullptr) {
-                ConnectionPtr conn = Endpoint::Accept(endpoint);
-                if (conn != nullptr)
-                    core->RegisterConnection(conn);
-                continue;
+            if (container->m_type_ == ContainerType::kEndpoint) {
+                EndpointPtr endpoint = std::static_pointer_cast<Endpoint>(container);
+
+                ContainerPtr conn = Endpoint::Accept(endpoint);
+                core->RegisterContainer(conn);
             }
+            // connection found
+            else {
+                ConnectionPtr conn = std::static_pointer_cast<Connection>(container);
 
-            // Error or Disconnect
-            if (epoll_events[i].events & EPOLLERR || epoll_events[i].events & EPOLLHUP || epoll_events[i].events & EPOLLRDHUP) {
-                core->UnregisterConnection(epoll_events[i].data.fd);
-            }
-            // Data Coming
-            else if (epoll_events[i].events & EPOLLIN) {
-                ConnectionPtr conn = nullptr;
-                {
-                    std::unique_lock<std::mutex> lck_connptrs(core->m_mtx_connptrs_);
-
-                    auto it_connptrs = core->m_fd_2_connptrs_.find(epoll_events[i].data.fd);
-                    if (it_connptrs != core->m_fd_2_connptrs_.end())
-                        conn = it_connptrs->second;
+                // error or connection closed
+                if (epoll_events[i].events & EPOLLERR || epoll_events[i].events & EPOLLHUP || epoll_events[i].events & EPOLLRDHUP) {
+                    core->UnregisterContainer(target_fd);
                 }
-
-                // connection receive message
-                if (conn != nullptr && conn->TryRecv()) {
-                    // run process function
-                    conn->m_process_func_(conn);
+                // data receive
+                else if (epoll_events[i].events & EPOLLIN) {
+                    // connection receive message
+                    if (conn->TryRecv()) {
+                        // run process function
+                        conn->m_process_func_(conn);
+                    }
                 }
-            }
-            // Send Avaliable
-            else if (epoll_events[i].events & EPOLLOUT) {
-                ConnectionPtr conn = nullptr;
-                {
-                    std::unique_lock<std::mutex> lck_connptrs(core->m_mtx_connptrs_);
-
-                    auto it_connptrs = core->m_fd_2_connptrs_.find(epoll_events[i].data.fd);
-                    if (it_connptrs != core->m_fd_2_connptrs_.end())
-                        conn = it_connptrs->second;
+                // available to send
+                else if (epoll_events[i].events & EPOLLOUT) {
+                    conn->SetSendFlag();
+                    core->StartTrySend();
                 }
-
-                conn->SetSendFlag();
-                core->StartTrySend();
             }
         }
     }
@@ -211,39 +201,41 @@ inline void Core::SendLoop(Core* core) {
     while (core->m_open_.load()) {
         // update need_to_send set
         {
-            std::unique_lock<std::mutex> lck(core->m_mtx_connptrs_);
+            std::unique_lock<std::mutex> lck(core->m_mtx_containers_);
 
             start_update_set:
-            for (auto it = core->m_fd_2_connptrs_.begin(); it != core->m_fd_2_connptrs_.end(); it++) {
-                const ConnectionPtr& conn = it->second;
-
+            for (auto it = core->m_fd_2_containers_.begin(); it != core->m_fd_2_containers_.end(); it++) {
+                const ContainerPtr& container = it->second;
+                if (container->m_type_ != ContainerType::kConnection)
+                    continue;
+                ConnectionPtr conn = std::static_pointer_cast<Connection>(container);
                 if (conn->NeedSend() && need_to_send.find(conn) == need_to_send.end())
                     need_to_send.emplace(conn);
             }
 
             // nothing need to send, wait
             if (need_to_send.size() == 0) {
-                core->m_cond_connptrs_.wait_for(lck, std::chrono::milliseconds(1));
+                core->m_cond_containers_.wait_for(lck, std::chrono::milliseconds(1));
                 if (!core->m_open_.load())
                     break;
-
                 goto start_update_set; // this can save time on unlocking and relocking
             }
         }
 
-        // call TrySend for connection in need_to_send set
-        uint32_t send_success_count = 0;
+        // call TrySend for connections in need_to_send set
         for (auto it = need_to_send.begin(); it != need_to_send.end(); it++) {
             const ConnectionPtr& conn = *it;
             
             // sent messages until can't send
             int quota = 10; // fair usage policy
             while (quota-- > 0) {
-                if (conn->TrySend() <= 0) {
-                    no_need_to_send.emplace(conn);
-                    break;
-                }
-                send_success_count++;
+                // keep send data until can't send or reach the limit
+                if (conn->TrySend() > 0) continue;
+
+                // when connection is unable to send data, put it into the no_need_to_send set
+                // it will removed from the need_to_send set after all connections have sent their data
+                no_need_to_send.emplace(conn);
+                break;
             }
         }
 
