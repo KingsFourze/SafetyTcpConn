@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.0.0)
-project(SafetyTcpConnDemo VERSION 0.2.2 LANGUAGES C CXX)
+project(SafetyTcpConnDemo VERSION 0.3.0 LANGUAGES C CXX)
 
 include(CTest)
 enable_testing()
