@@ -1,5 +1,13 @@
 # Change Log
 
+## v0.3.0 @2025-02-23
+Release v0.3.0
+1. version set to `0.3.0`
+1. add `Core`
+    - which is required.
+    - manage multiple endpoints and connections in one epoll
+1. fix the memory leak bug in `Connection::ExtendBuffer`
+
 ## v0.2.2 @2024-06-16
 1. version set to `0.2.2`
 1. add method `Connection::MsgEnqueue(const std::string)`
