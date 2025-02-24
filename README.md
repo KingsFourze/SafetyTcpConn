@@ -6,9 +6,9 @@
     - using `mutex` protect the `fd to connection map`
     - using `atomic_bool` prevent `close(fd)` multiple times
 1. **Fair Usage Policy**
-    - set quota for send counters per connection
+    - set a quota of maximum send count in each sending process for each connection
         - quota : 10
-    - set the maximum number of bytes sent by each sending process
+    - set the maximum sending bytes in each sending process
         - max sending bytes : 1500
 1. **Detect Undetectable Disconnections** (e.g.: power outage / vpn disconnection)
     1. detect unsendable connection with non-blocking mode when sending
