@@ -3,7 +3,7 @@
 ## v0.3.1 @2025-06-01
 Release v0.3.1
 1. rename *_Func.hpp to *.impl.hpp
-2. call start try send function when connection is avaliable to send only
+1. call start try send function when connection is avaliable to send only
 
 ## v0.3.0 @2025-02-23
 Release v0.3.0
