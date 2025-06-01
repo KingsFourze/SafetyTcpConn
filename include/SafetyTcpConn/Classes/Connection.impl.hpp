@@ -140,7 +140,7 @@ inline void Connection::MsgEnqueue(const char* msg, const size_t len) {
         m_send_buff_size_ = total_data_len;
     }
 
-    if (!m_send_flag_.load())
+    if (m_send_flag_.load())
         m_core_->StartTrySend();
 }
 
