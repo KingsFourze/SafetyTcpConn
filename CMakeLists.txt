@@ -8,6 +8,7 @@ set(CMAKE_CXX_STANDARD_REQUIRED true)
 set(CMAKE_CXX_STANDARD 11)
 
 include_directories(${PROJECT_SOURCE_DIR}/include)
+link_libraries(pthread)
 add_executable(SafetyTcpConnDemo demo/main.cpp)
 
 set(CPACK_PROJECT_NAME ${PROJECT_NAME})
