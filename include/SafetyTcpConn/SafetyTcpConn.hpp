@@ -7,8 +7,8 @@
 #include "Classes/Endpoint.hpp"
 #include "Classes/Connection.hpp"
 
-#include "Classes/Core_Func.hpp"
-#include "Classes/Endpoint_Func.hpp"
-#include "Classes/Connection_Func.hpp"
+#include "Classes/Core.impl.hpp"
+#include "Classes/Endpoint.impl.hpp"
+#include "Classes/Connection.impl.hpp"
 
 #endif
