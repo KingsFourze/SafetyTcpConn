@@ -2,6 +2,7 @@
 
 ## v0.3.1 @2025-06-01
 Release v0.3.1
+1. version set to `0.3.1`
 1. rename *_Func.hpp to *.impl.hpp
 1. call start try send function when connection is avaliable to send only
 
